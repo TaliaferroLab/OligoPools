@@ -3,6 +3,10 @@
 #Also, the parameters for oligo coverage (oligo length, coverage depth, etc.) can be tuned.
 #For a start, each oligo is a 110mer and the average coverage is 2.5X
 
+#Updated, each oligo is 160 nt and the average coverage is 2.5X, giving a step size of 64 nt
+
+#python 2.7
+
 import gffutils
 import os
 import sys
@@ -226,18 +230,20 @@ def iterategff(gff, validwindows):
 				UTRstart = transcript.start
 				UTRend = min(CDScoords) - 1
 
-			#Get 44 nt immediately upstream of the beginning of the UTR
+			#Get 64 nt immediately upstream of the beginning of the UTR
 			if strand == '+':
 				UTRstartindex = exoncoords.index(max(CDScoords))
 				#upstreamnt = exoncoords[UTRstartindex - 44 : UTRstartindex + 1]
-				upstreamnt = exoncoords[UTRstartindex - 43 : UTRstartindex + 1]
+				#upstreamnt = exoncoords[UTRstartindex - 43 : UTRstartindex + 1]
+				upstreamnt = exoncoords[UTRstartindex - 63 : UTRstartindex + 1]
 			elif strand == '-':
 				UTRstartindex = exoncoords.index(min(CDScoords))
 				#upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 45]
-				upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 44]
+				#upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 44]
+				upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 64]
 
 			UTRcoords = range(UTRstart, UTRend + 1)
-			#Add on the upstream 50 nt
+			#Add on the upstream 64 nt
 			UTRcoords = upstreamnt + UTRcoords
 
 			#Filter for those that are exonic
@@ -277,20 +283,26 @@ def iterategff(gff, validwindows):
 					#Downstream tiled should be offset by 44 the other way: 10upstream--lastexonic--firstexonic--98downstream
 					#So what we really want is 98upstream--lastexonic--firstexonic--98downstream as a block.  Then make oligos from that later.
 					#If 98 nt away from the junction is outside the bounds of the transcript, add sequence from beyond the transcript to make up the difference.
-					if lastexonicindex - 98 < 0: #If the junction is within 98 nt of the transcript start, 
-						missingntleft = 98 - lastexonicindex
+
+					#Assuming an oligo length of 160, the evenly spaced bridge should be 79upstream--last exonic--first exonic--79 downstream
+					#Upstream tiled should be offset by 64 from above: 143upstream--lastexonic--firstexonic--15downstream
+					#Downstream tiled should be offset by 64 the other way: 15upstream--lastexonic--firstexonic--143downstream
+					#So what we really want is 143upstream--lastexonic--firstexonic--143downstream as a block.  Then make oligos from that later.
+					#If 98 nt away from the junction is outside the bounds of the transcript, add sequence from beyond the transcript to make up the difference.
+					if lastexonicindex - 143 < 0: #If the junction is within 143 nt of the transcript start, 
+						missingntleft = 143 - lastexonicindex
 						junctionblockstart = exoncoords[0] - missingntleft
-						junctionblock = range(junctionblockstart, exoncoords[0]) + exoncoords[0:lastexonicindex + 1] + exoncoords[firstexonicindex : firstexonicindex + 98 + 1]
+						junctionblock = range(junctionblockstart, exoncoords[0]) + exoncoords[0:lastexonicindex + 1] + exoncoords[firstexonicindex : firstexonicindex + 143 + 1]
 
-					elif firstexonicindex + 98 > len(exoncoords) - 1: #if the junction is within 98 nt of the transcript end
+					elif firstexonicindex + 143 > len(exoncoords) - 1: #if the junction is within 143 nt of the transcript end
 						rightntintranscript = len(exoncoords[firstexonicindex:])
-						missingntright = 99 - rightntintranscript
+						missingntright = 144 - rightntintranscript
 						junctionblockend = exoncoords[-1] + missingntright
-						junctionblock = exoncoords[lastexonicindex - 98 : lastexonicindex + 1] + exoncoords[firstexonicindex :] + range(exoncoords[-1] + 1, junctionblockend + 1)
+						junctionblock = exoncoords[lastexonicindex - 143 : lastexonicindex + 1] + exoncoords[firstexonicindex :] + range(exoncoords[-1] + 1, junctionblockend + 1)
 
-					elif lastexonicindex - 98 >=0 and firstexonicindex + 98 <= len(exoncoords) - 1: #if the entire junction block is contained within the transcript
-						junctionblockstart = lastexonicindex - 98
-						junctionblockend = firstexonicindex + 98 + 1
+					elif lastexonicindex - 143 >=0 and firstexonicindex + 143 <= len(exoncoords) - 1: #if the entire junction block is contained within the transcript
+						junctionblockstart = lastexonicindex - 143
+						junctionblockend = firstexonicindex + 143 + 1
 						junctionblock = exoncoords[junctionblockstart : junctionblockend]
 
 					junctionblocks.append(junctionblock)
@@ -381,14 +393,15 @@ def cutexons(coords):
 			exonend = exon[1]
 			currentpos = exonstart
 			#This is confusing but because the gff is 1-based and open, an oligo that is x to x + 109 will actually be length 110
-			while currentpos + 109 <= exonend:
+			#This is confusing but because the gff is 1-based and open, an oligo that is x to x + 159 will actually be length 160
+			while currentpos + 159 <= exonend:
 				oligostart = currentpos
-				oligoend = currentpos + 109
+				oligoend = currentpos + 159
 				oligos.append([oligostart, oligoend])
-				currentpos += 44 #for 2.5X coverage (110 / 2.5)
+				currentpos += 64 #for 2.5X coverage (160 / 2.5)
 			#If the final oligo does not lie flush with the end of the exon, make one more oligo that does
 			if currentpos != exonend:
-				oligos.append([exonend - 109, exonend])
+				oligos.append([exonend - 159, exonend])
 
 	elif strand == '-':
 		#Gotta start from the other end of coords so that we make the same kind of "final" oligo that lies flush with the polyA site
@@ -399,21 +412,25 @@ def cutexons(coords):
 			exonstart = exon[1] #these coords have start > end because they are on minus strand
 			exonend = exon[0]
 			currentpos = exonstart
-			while currentpos - 109 >= exonend:
+			while currentpos - 159 >= exonend:
 				oligoend = currentpos #these coords are back to having start < end
-				oligostart = currentpos - 109
+				oligostart = currentpos - 159
 				oligos.append([oligostart, oligoend])
-				currentpos -= 44 #for 2.5X coverage (110 / 2.5)
+				currentpos -= 64 #for 2.5X coverage (160 / 2.5)
 			#If the final oligo does not lie flush with the end of the exon, make one more oligo that does
 			if currentpos != exonend:
-				oligos.append([exonend, exonend + 109])
+				oligos.append([exonend, exonend + 159])
 
 
 
 	for junction in junctions:
-		jo1 = junction[0:110]
-		jo2 = junction[44:154]
-		jo3 = junction[88:198]
+		#jo1 = junction[0:110]
+		#jo2 = junction[44:154]
+		#jo3 = junction[88:198]
+
+		jo1 = junction[0:160]
+		jo2 = junction[64:224]
+		jo3 = junction[128:288]
 
 		for oligo in [jo1, jo2, jo3]:
 			brokencoords = breakoligo(oligo)
