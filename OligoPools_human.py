@@ -234,25 +234,29 @@ def iterategff(gff, validwindows):
 			#Get 64 nt immediately upstream of the beginning of the UTR
 			#If the UTR is shorter than 96 (160 - one step size), we need extra sequence to fit one whole oligo.
 			#The amount of extra sequence we need 160 - 64 - UTRlength
+
+			#Get 44 nt immediately  upstream of the beginning of the UTR.
+			#If the UTR is shorter than 66 (110 - one step size), we need extra sequence to fit one whole oligo.
+			#The amount of extra sequence we need is 110 - 44 - UTRlength
 			if strand == '+':
 				UTRstartindex = exoncoords.index(max(CDScoords))
 				#upstreamnt = exoncoords[UTRstartindex - 44 : UTRstartindex + 1]
-				#upstreamnt = exoncoords[UTRstartindex - 43 : UTRstartindex + 1]
-				upstreamnt = exoncoords[UTRstartindex - 63 : UTRstartindex + 1]
+				upstreamnt = exoncoords[UTRstartindex - 43 : UTRstartindex + 1]
+				#upstreamnt = exoncoords[UTRstartindex - 63 : UTRstartindex + 1]
 				UTRl = (UTRend - UTRstart) + 1
-				if UTRl < 96:
-					extrantneeded = 96 - UTRl
-					upstreamnt = exoncoords[UTRstartindex - 63 - extrantneeded : UTRstartindex + 1]
+				if UTRl < 66:
+					extrantneeded = 66 - UTRl
+					upstreamnt = exoncoords[UTRstartindex - 43 - extrantneeded : UTRstartindex + 1]
 					#print UTRl, len(upstreamnt), strand 
 			elif strand == '-':
 				UTRstartindex = exoncoords.index(min(CDScoords))
 				#upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 45]
-				#upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 44]
-				upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 64]
+				upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 44]
+				#upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 64]
 				UTRl = (UTRend - UTRstart) + 1
-				if UTRl < 96:
-					extrantneeded = 96 - (UTRend - UTRstart + 1)
-					upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 64 + extrantneeded]
+				if UTRl < 66:
+					extrantneeded = 66 - (UTRend - UTRstart + 1)
+					upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 44 + extrantneeded]
 					#print UTRl, len(upstreamnt), strand 
 
 			UTRcoords = range(UTRstart, UTRend + 1)
@@ -310,6 +314,7 @@ def iterategff(gff, validwindows):
 					#Downstream tiled should be offset by 64 the other way: 15upstream--lastexonic--firstexonic--143downstream
 					#So what we really want is 143upstream--lastexonic--firstexonic--143downstream as a block.  Then make oligos from that later.
 					#If 98 nt away from the junction is outside the bounds of the transcript, add sequence from beyond the transcript to make up the difference.
+					'''
 					if lastexonicindex - 143 < 0: #If the junction is within 143 nt of the transcript start, 
 						missingntleft = 144 - lastexonicindex
 						junctionblockstart = exoncoords[0] - missingntleft
@@ -324,6 +329,23 @@ def iterategff(gff, validwindows):
 					elif lastexonicindex - 143 >=0 and firstexonicindex + 143 <= len(exoncoords) - 1: #if the entire junction block is contained within the transcript
 						junctionblockstart = lastexonicindex - 143
 						junctionblockend = firstexonicindex + 143 + 1
+						junctionblock = exoncoords[junctionblockstart : junctionblockend]
+					'''
+
+					if lastexonicindex - 98 < 0: #If the junction is within 98 nt of the transcript start, 
+						missingntleft = 99 - lastexonicindex
+						junctionblockstart = exoncoords[0] - missingntleft
+						junctionblock = range(junctionblockstart, exoncoords[0]) + exoncoords[0:lastexonicindex + 1] + exoncoords[firstexonicindex : firstexonicindex + 98 + 1]
+
+					elif firstexonicindex + 98 > len(exoncoords) - 1: #if the junction is within 143 nt of the transcript end
+						rightntintranscript = len(exoncoords[firstexonicindex:])
+						missingntright = 99 - rightntintranscript
+						junctionblockend = exoncoords[-1] + missingntright
+						junctionblock = exoncoords[lastexonicindex - 98 : lastexonicindex + 1] + exoncoords[firstexonicindex :] + range(exoncoords[-1] + 1, junctionblockend + 1)
+
+					elif lastexonicindex - 98 >=0 and firstexonicindex + 98 <= len(exoncoords) - 1: #if the entire junction block is contained within the transcript
+						junctionblockstart = lastexonicindex - 98
+						junctionblockend = firstexonicindex + 98 + 1
 						junctionblock = exoncoords[junctionblockstart : junctionblockend]
 
 					junctionblocks.append(junctionblock)
@@ -441,7 +463,7 @@ def filterlocalization(lrtable, mergedexons):
 	med = df.median(axis = 1, skipna = True, numeric_only = True)
 	df = df.assign(median = med)
 	#Filter for those that have <= -0.75 LRz (negctrls), > 0.5 LRz, or are Ranbp1 or Actb
-	query = 'median <= -0.7 | median > 0.35 | Gene == "Actb" | Gene == "Ranbp1"'
+	query = 'median <= -0.7 | median > 0.4 | Gene == "Actb" | Gene == "Ranbp1"'
 	df = df.query(query)
 	chosengenes = df['ensembl_gene_id'].tolist()
 
@@ -506,14 +528,14 @@ def cutexons(coords):
 				currentpos = exonstart
 				#This is confusing but because the gff is 1-based and open, an oligo that is x to x + 109 will actually be length 110
 				#This is confusing but because the gff is 1-based and open, an oligo that is x to x + 159 will actually be length 160
-				while currentpos + 159 <= exonend:
+				while currentpos + 109 <= exonend:
 					oligostart = currentpos
-					oligoend = currentpos + 159
+					oligoend = currentpos + 109
 					oligos.append([[oligostart, oligoend]])
-					currentpos += 64 #for 2.5X coverage (160 / 2.5)
+					currentpos += 44 #for 2.5X coverage (160 / 2.5 or 110 / 2.5)
 				#If the final oligo does not lie flush with the end of the exon, make one more oligo that does
 				if currentpos != exonend:
-					oligos.append([[exonend - 159, exonend]])
+					oligos.append([[exonend - 109, exonend]])
 
 		elif strand == '-':
 			#Gotta start from the other end of coords so that we make the same kind of "final" oligo that lies flush with the polyA site
@@ -524,14 +546,14 @@ def cutexons(coords):
 				exonstart = exon[1] #these coords have start > end because they are on minus strand
 				exonend = exon[0]
 				currentpos = exonstart
-				while currentpos - 159 >= exonend:
+				while currentpos - 109 >= exonend:
 					oligoend = currentpos #these coords are back to having start < end
-					oligostart = currentpos - 159
+					oligostart = currentpos - 109
 					oligos.append([[oligostart, oligoend]])
-					currentpos -= 64 #for 2.5X coverage (160 / 2.5)
+					currentpos -= 44 #for 2.5X coverage (160 / 2.5 or 110 / 2.5)
 				#If the final oligo does not lie flush with the end of the exon, make one more oligo that does
 				if currentpos != exonend:
-					oligos.append([[exonend, exonend + 159]])
+					oligos.append([[exonend, exonend + 109]])
 
 	#If there's more than one exon, it's more complicated
 	elif len(exons) > 1:
@@ -542,17 +564,17 @@ def cutexons(coords):
 			currentposindex = 0
 			#This is slightly different than the single-exon example above. Here we are stepping along indices, so we need the oligo to go from index x to index x + 160.
 			#This will give coordinates that are 159 "places" apart
-			while currentposindex + 160 <= len(exoniccoords):
+			while currentposindex + 110 <= len(exoniccoords):
 				oligostart = currentposindex
-				oligoend = currentposindex + 160
+				oligoend = currentposindex + 110
 				oligocoords = exoniccoords[oligostart : oligoend]
 				#We might need to break this oligo because it may have crossed an exon/exon boundary
 				oligocoords = breakoligo(oligocoords) #if this doesn't cross a boundary, its now [[start, stop]]. if it does, its [[start1, stop1], [start2, stop2], [start3, stop3]]
 				oligos.append(oligocoords) 
-				currentposindex += 64
+				currentposindex += 44
 			#If the final oligo does not lie flush with the end of the last exon, make one more oligo that does
 			if currentposindex != len(exoniccoords):
-				oligocoords = exoniccoords[-160:]
+				oligocoords = exoniccoords[-110:]
 				oligocoords = breakoligo(oligocoords)
 				oligos.append(oligocoords)
 
@@ -562,31 +584,31 @@ def cutexons(coords):
 				exoniccoords += range(exon[0], exon[1] + 1)
 			exoniccoords.reverse()
 			currentposindex = 0
-			while currentposindex + 160 <= len(exoniccoords):
-				oligostart = currentposindex + 160 #have to make it so start < end
+			while currentposindex + 110 <= len(exoniccoords):
+				oligostart = currentposindex + 110 #have to make it so start < end
 				oligoend = currentposindex
 				oligocoords = exoniccoords[oligoend : oligostart]
 				#We might need to break this oligo because it may have crossed an exon/exon boundary
 				oligocoords.reverse() #flip it back around so that startcoord < endcoord
 				oligocoords = breakoligo(oligocoords)
 				oligos.append(oligocoords)
-				currentposindex += 64
+				currentposindex += 44
 			#If the final oligo does not lie flush with the end of the last exon, make one more oligo that does
 			if currentposindex != len(exoniccoords):
-				oligocoords = exoniccoords[-160:]
+				oligocoords = exoniccoords[-110:]
 				oligocoords = reversed(oligocoords)
 				oligocoords = breakoligo(oligocoords)
 				oligos.append(oligocoords)
 
 
 	for junction in junctions:
-		#jo1 = junction[0:110]
-		#jo2 = junction[44:154]
-		#jo3 = junction[88:198]
+		jo1 = junction[0:110]
+		jo2 = junction[44:154]
+		jo3 = junction[88:198]
 
-		jo1 = junction[0:160]
-		jo2 = junction[64:224]
-		jo3 = junction[128:288]
+		#jo1 = junction[0:160]
+		#jo2 = junction[64:224]
+		#jo3 = junction[128:288]
 
 		for oligo in [jo1, jo2, jo3]:
 			brokencoords = breakoligo(oligo)
@@ -649,9 +671,9 @@ def makegff(oligocoords, junctionoligocoords, genenames):
 					oligoend = oligo[0][1]
 					#Somehow a small number of oligos (~10) are ending up at length 159 (pre adapter addition). I can't figure out why.  Fix this lazily here.
 					oligolength = (oligoend - oligostart) + 1
-					if oligolength < 159:
+					if oligolength < 109:
 						continue
-					elif oligolength == 159:
+					elif oligolength == 109:
 						if strand == '+':
 							oligoend += 1
 						elif strand == '-':
