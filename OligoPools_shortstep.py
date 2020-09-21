@@ -1,7 +1,8 @@
 #Given a gff annotation of a genome and a genome sequence, make a pool of oligo sequences that cover all 3' UTRs.
 #This can be subsetted to only consider some genes (e.g. only genes expressed in certain cells).
 #Also, the parameters for oligo coverage (oligo length, coverage depth, etc.) can be tuned.
-#For a start, each oligo is a 110mer and the average coverage is 2.5X
+
+#python3
 
 import gffutils
 import os
@@ -11,12 +12,10 @@ from itertools import groupby
 import subprocess
 import pybedtools
 import pickle
-import pandas as pd
 from Bio import SeqIO
 import gzip
 import argparse
-from biomaRt import getmouseens2humanens
-from rpy2.rinterface import RRuntimeError
+import pickle
 import collections
 
 #Write UTR coords to file so that we can use Bedtools.
@@ -32,22 +31,23 @@ def writeUTRcoords(geneUTRcoords):
 		subprocess.call(command, stdout = outfh)
 
 
+
 #Get a set of polyAsite coords from another genome.  This will be used as a reference for determining whether a given polyAsite
 #is conserved.  Write these to file, then use UCSC liftover to convert them to another genome's coordinate.
 #In the end, return a dictionary of "valid" positions for polyAsites in the liftedover genome.  In this example, the supplied gff would be
-#for mm10, and the returned coordinates of valid positions would be in hg38.
+#for hg38, and the returned coordinates of valid positions would be in mm10.
 
 def getothergenomepolyA(gff):
 	#Make gff database
 
-	print 'Indexing gff...'
+	print('Indexing gff...')
 	gff_fn = gff
 	db_fn = os.path.abspath(gff_fn) + '.db'
 	if os.path.isfile(db_fn) == False:
 		gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
 
 	db = gffutils.FeatureDB(db_fn)
-	print 'Done indexing!'
+	print('Done indexing!')
 
 	genes = db.features_of_type('gene')
 
@@ -59,7 +59,7 @@ def getothergenomepolyA(gff):
 			continue
 		genecounter +=1
 		if genecounter % 5000 == 0:
-			print 'Gene {0}...'.format(genecounter)
+			print('Gene {0}...'.format(genecounter))
 
 		for transcript in db.children(gene, featuretype = 'transcript'):
 			#Only look at protein coding transcripts
@@ -88,12 +88,12 @@ def getothergenomepolyA(gff):
 			outfh.write(('\t').join([chrm, str(start), str(stop), strand, transcript]) + '\n')
 
 	#Liftover these polyA sites to mm10
-	command = ['liftOver', 'polyAsites.bed', '/Users/mtaliaferro/Desktop/Annotations/mm10ToHg38.over.chain.gz', 'liftedpolyAsites.bed', 'unliftedpolyAsites.bed']
+	command = ['liftOver', 'polyAsites.bed', '/beevol/home/taliaferro/Annotations/LiftOver/hg38ToMm10.over.chain.gz', 'liftedpolyAsites.bed', 'unliftedpolyAsites.bed']
 	subprocess.call(command)
 	num_lifted = sum(1 for line in open('liftedpolyAsites.bed'))
 	num_unlifted = sum(1 for line in open('unliftedpolyAsites.bed')) / 2 #In unliftedpolyAsites.bed, there are 2 lines per polyAsite
 	percentlifted = round((num_lifted / float(num_lifted + num_unlifted)) * 100, 2)
-	print 'Lifted over {0} percent of {1} polyAsites.'.format(percentlifted, num_unlifted + num_lifted)
+	print('Lifted over {0} percent of {1} polyAsites.'.format(percentlifted, num_unlifted + num_lifted))
 	os.remove('polyAsites.bed')
 
 	#Define "valid" polyAsite regions.
@@ -104,8 +104,8 @@ def getothergenomepolyA(gff):
 			line = line.strip().split('\t')
 			chrm = line[0]
 			start = int(line[1])
-			windowstart = start - 200 #Can change this
-			windowstop = start + 200 #Can change this
+			windowstart = start - 250 #Can change this
+			windowstop = start + 250#Can change this
 			if chrm not in validwindows:
 				validwindows[chrm] = []
 			windowrange = range(windowstart, windowstop + 1)
@@ -121,7 +121,7 @@ def getothergenomepolyA(gff):
 
 def getgenenames(gff):
 	#Go through the gff and get gene short names
-	print 'Getting gene names...'
+	print('Getting gene names...')
 	gff_fn = gff
 	db_fn = os.path.abspath(gff_fn) + '.db'
 	if os.path.isfile(db_fn) == False:
@@ -138,23 +138,24 @@ def getgenenames(gff):
 		shortname = gene.attributes['gene_name'][0]
 		ens2genename[genename] = shortname
 
-	print 'Found names for {0} genes.'.format(len(ens2genename))
+	print('Found names for {0} genes.'.format(len(ens2genename)))
 
 	return ens2genename
 
+
+
 #Iterate through a gff, gene by gene, collecting all 3' UTR coords for protein coding transcripts of that gene
-#Iterate through a gff, gene by gene, collecting all 3' UTR coords for protein coding transcripts of that gene
-def iterategff(gff, validwindows):
+def iterategff(gff, validwindows, stepsize):
 	#Make gff database
 
-	print 'Indexing gff...'
+	print('Indexing gff...')
 	gff_fn = gff
 	db_fn = os.path.abspath(gff_fn) + '.db'
 	if os.path.isfile(db_fn) == False:
 		gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
 
 	db = gffutils.FeatureDB(db_fn)
-	print 'Done indexing!'
+	print('Done indexing!')
 
 	genes = db.features_of_type('gene')
 	genecounter = 0
@@ -164,7 +165,7 @@ def iterategff(gff, validwindows):
 	tslcounter = 0
 	notinvalidwindowscounter = 0
 
-	mergedexons = {} #{genename : [chrm, strand, [[mergedexon1start, mergedexon1stop], [mergedexon2start, mergedexon2stop]]]}
+	mergedexons = {} #{genename : [chrm, strand, [[mergedexon1start, mergedexon1stop], [mergedexon2start, mergedexon2stop]], [junctionblocks]]}
 
 	for gene in genes:
 		genename = str(gene.id).split('.')[0]
@@ -174,7 +175,7 @@ def iterategff(gff, validwindows):
 			continue
 		genecounter +=1
 		if genecounter % 5000 == 0:
-			print 'Gene {0}...'.format(genecounter)
+			print('Gene {0}...'.format(genecounter))
 
 		#Does any UTR in this gene have introns
 		hasjunctions = False
@@ -224,59 +225,53 @@ def iterategff(gff, validwindows):
 				CDScoords += range(CDSexon.start, CDSexon.end + 1)
 
 			#3' UTR starts directly after the CDS end
+			#Add 25 nt to the end so that we get good coverage of the end
 			if strand == '+':
 				UTRstart = max(CDScoords) + 1
-				UTRend = transcript.end
+				UTRend = transcript.end + 25
 			elif strand == '-':
-				UTRstart = transcript.start
+				UTRstart = transcript.start - 25
 				UTRend = min(CDScoords) - 1
 
-			#Get 64 nt immediately upstream of the beginning of the UTR
-			#If the UTR is shorter than 96 (160 - one step size), we need extra sequence to fit one whole oligo.
-			#The amount of extra sequence we need 160 - 64 - UTRlength
-
-			#Get 44 nt immediately  upstream of the beginning of the UTR.
-			#If the UTR is shorter than 66 (110 - one step size), we need extra sequence to fit one whole oligo.
-			#The amount of extra sequence we need is 110 - 44 - UTRlength
+			#Get 25 nt immediately upstream of the beginning of the UTR.  We are going to include this as UTR sequence 
+			#so that we get good coverage of the beginning of the UTR.
+			#If the UTR is shorter than one oligo size (110), we need extra sequence to fit one whole oligo.
+			#The amount of extra sequence we need is 110 - UTRlength
 			if strand == '+':
 				UTRstartindex = exoncoords.index(max(CDScoords))
-				#upstreamnt = exoncoords[UTRstartindex - 44 : UTRstartindex + 1]
-				upstreamnt = exoncoords[UTRstartindex - 43 : UTRstartindex + 1]
-				#upstreamnt = exoncoords[UTRstartindex - 63 : UTRstartindex + 1]
+				upstreamnt = exoncoords[UTRstartindex - 24 : UTRstartindex + 1]
 				UTRl = (UTRend - UTRstart) + 1
-				if UTRl < 66:
-					extrantneeded = 66 - UTRl
-					upstreamnt = exoncoords[UTRstartindex - 43 - extrantneeded : UTRstartindex + 1]
+				if UTRl < 110:
+					extrantneeded = 110 - UTRl
+					upstreamnt = exoncoords[UTRstartindex - 109 - extrantneeded : UTRstartindex + 1]
 					#print UTRl, len(upstreamnt), strand 
 			elif strand == '-':
 				UTRstartindex = exoncoords.index(min(CDScoords))
-				#upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 45]
-				upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 44]
-				#upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 64]
+				upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 25]
 				UTRl = (UTRend - UTRstart) + 1
-				if UTRl < 66:
-					extrantneeded = 66 - (UTRend - UTRstart + 1)
-					upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 44 + extrantneeded]
+				if UTRl < 110:
+					extrantneeded = 110 - (UTRend - UTRstart + 1)
+					upstreamnt = exoncoords[UTRstartindex : UTRstartindex + 25 + extrantneeded]
 					#print UTRl, len(upstreamnt), strand 
 
-			UTRcoords = range(UTRstart, UTRend + 1)
-			#Add on the upstream 64 nt
+			UTRcoords = list(range(UTRstart, UTRend + 1))
+			#Add on the upstream nt
 			UTRcoords = upstreamnt + UTRcoords
 
 			#Filter for those that are exonic
 			UTRcoords = sorted(list(set(UTRcoords).intersection(exoncoords)))
 
 			#If this UTR is longer than 8 kb or shorter than 96 (160 - one step size) nt, forget it
-			if len(UTRcoords) > 100000000:
-				#print 'Long UTR : {0}'.format(str(transcript.id))
+			if len(UTRcoords) > 8000:
+				print('Long UTR : {0}'.format(str(transcript.id)))
 				longUTRcounter +=1
 				continue
 
 			#Now get breaks in consecutive exonic positions
 			#http://stackoverflow.com/questions/2361945/detecting-consecutive-integers-in-a-list
 			UTRexoncoords = [] #[[exon1start, exon1stop], [exon2start, exon2stop]]
-			for k, g in groupby(enumerate(UTRcoords), lambda (index, item): index-item):
-				exonbp = map(itemgetter(1), g)
+			for k, g in groupby(enumerate(UTRcoords), lambda ix: ix[0] - ix[1]):
+				exonbp = list(map(itemgetter(1), g))
 				if len(exonbp) > 1:
 					UTRexoncoords.append([exonbp[0], exonbp[-1]])
 
@@ -289,7 +284,7 @@ def iterategff(gff, validwindows):
 				pass
 			elif len(UTRexoncoords) > 1:
 				hasjunctions = True
-				junctionblocks = [] #This is the entire region covering a junction, from 99 nt upstream to 99 nt downstream
+				junctionblocks = [] #This is the entire region covering a junction, from 110-stepsize upstream to 110-stepsize downstream
 				for i in range(len(UTRexoncoords) - 1):
 					lastexonicposition = UTRexoncoords[i][1] #last exonic coord (left to right) before the intron
 					firstexonicposition = UTRexoncoords[i + 1][0] #first exonic coord (left to right) after the intron
@@ -303,35 +298,36 @@ def iterategff(gff, validwindows):
 							continue
 					lastexonicindex = exoncoords.index(lastexonicposition)
 					firstexonicindex = exoncoords.index(firstexonicposition)
+
+					#Assuming an oligo length of 110, the most leftward junction oligo would have 110-stepsize nt on the left exon and 
+					#stepsize nt on the right exon.  The most rightward junction oligo would have stepsize nt on the left exon and 110 - stepsize
+					#nt on the right exon.  So what we really was is 109-stepsizeupstream---lastexonic--firstexonic--109-stepsizedownstream.
+					#Then make oligos from that later.
+					#If 109-stepsize away from the junction is outside the bounds of the transcript, add sequence from beyond the transcript to make up the difference.
+
 					#Assuming an oligo length of 110, the evenly spaced bridge should be 54upstream--last exonic--first exonic--54 downstream
 					#Upstream tiled should be offset by 44 from above: 98upstream--lastexonic--firstexonic--10downstream
 					#Downstream tiled should be offset by 44 the other way: 10upstream--lastexonic--firstexonic--98downstream
 					#So what we really want is 98upstream--lastexonic--firstexonic--98downstream as a block.  Then make oligos from that later.
 					#If 98 nt away from the junction is outside the bounds of the transcript, add sequence from beyond the transcript to make up the difference.
 
-					#Assuming an oligo length of 160, the evenly spaced bridge should be 79upstream--last exonic--first exonic--79 downstream
-					#Upstream tiled should be offset by 64 from above: 143upstream--lastexonic--firstexonic--15downstream
-					#Downstream tiled should be offset by 64 the other way: 15upstream--lastexonic--firstexonic--143downstream
-					#So what we really want is 143upstream--lastexonic--firstexonic--143downstream as a block.  Then make oligos from that later.
-					#If 98 nt away from the junction is outside the bounds of the transcript, add sequence from beyond the transcript to make up the difference.
-					'''
-					if lastexonicindex - 143 < 0: #If the junction is within 143 nt of the transcript start, 
-						missingntleft = 144 - lastexonicindex
+					if lastexonicindex - (109 - stepsize) < 0: #if the junction is within 109-stepsize of the transcript start
+						missingntleft = ((109 - stepsize) + 1) - lastexonicindex
 						junctionblockstart = exoncoords[0] - missingntleft
-						junctionblock = range(junctionblockstart, exoncoords[0]) + exoncoords[0:lastexonicindex + 1] + exoncoords[firstexonicindex : firstexonicindex + 143 + 1]
+						junctionblock = list(range(junctionblockstart, exoncoords[0])) + exoncoords[0:lastexonicindex + 1] + exoncoords[firstexonicindex : firstexonicindex + (109 + stepsize) + 1]
 
-					elif firstexonicindex + 143 > len(exoncoords) - 1: #if the junction is within 143 nt of the transcript end
+					elif firstexonicindex + (109 - stepsize) > len(exoncoords) - 1: #if the junction is within 109-stepsize of the transcript end
 						rightntintranscript = len(exoncoords[firstexonicindex:])
-						missingntright = 144 - rightntintranscript ###CHECK
+						missingntright = ((109 - stepsize) + 1) - rightntintranscript
 						junctionblockend = exoncoords[-1] + missingntright
-						junctionblock = exoncoords[lastexonicindex - 143 : lastexonicindex + 1] + exoncoords[firstexonicindex :] + range(exoncoords[-1] + 1, junctionblockend + 1)
+						junctionblock = exoncoords[lastexonicindex - (109 - stepsize) : lastexonicindex + 1] + exoncoords[firstexonicindex:] + list(range(exoncoords[-1] + 1, junctionblockend + 1))
 
-					elif lastexonicindex - 143 >=0 and firstexonicindex + 143 <= len(exoncoords) - 1: #if the entire junction block is contained within the transcript
-						junctionblockstart = lastexonicindex - 143
-						junctionblockend = firstexonicindex + 143 + 1
+					elif lastexonicindex - (109 - stepsize) >= 0 and firstexonicindex + (109 - stepsize) <= len(exoncoords) - 1: #if the entire junction block is contained within the transcript
+						junctionblockstart = lastexonicindex - (109 - stepsize)
+						junctionblockend = firstexonicindex + (109 - stepsize) + 1
 						junctionblock = exoncoords[junctionblockstart : junctionblockend]
-					'''
 
+					'''
 					if lastexonicindex - 98 < 0: #If the junction is within 98 nt of the transcript start, 
 						missingntleft = 99 - lastexonicindex
 						junctionblockstart = exoncoords[0] - missingntleft
@@ -347,6 +343,7 @@ def iterategff(gff, validwindows):
 						junctionblockstart = lastexonicindex - 98
 						junctionblockend = firstexonicindex + 98 + 1
 						junctionblock = exoncoords[junctionblockstart : junctionblockend]
+					'''
 
 					junctionblocks.append(junctionblock)
 
@@ -377,141 +374,49 @@ def iterategff(gff, validwindows):
 		elif hasjunctions == False:
 			mergedexons[genename] = [gene.chrom, gene.strand, exons, []]
 
-	print 'Looked through {0} protein coding genes. {1} of these ({2}%) had at least one transcript that passed all filters.'.format(genecounter, genecounter - len(geneswithoutpassingtranscripts), round(((genecounter - len(geneswithoutpassingtranscripts)) / float(genecounter)) * 100), 3)
-	print 'Looked through {0} transcripts. {1} had UTRs that were too long or too short. {2} were not supported in the annotation (TSL > 1). {3} did not have polyA sites within 200 nt of the orthologous human genome location.'.format(transcriptcounter, longUTRcounter, tslcounter, notinvalidwindowscounter)
+	print('Looked through {0} protein coding genes. {1} of these ({2}%) had at least one transcript that passed all filters.'.format(genecounter, genecounter - len(geneswithoutpassingtranscripts), round(((genecounter - len(geneswithoutpassingtranscripts)) / float(genecounter)) * 100), 3))
+	print('Looked through {0} transcripts. {1} had UTRs that were too long or too short. {2} were not supported in the annotation (TSL > 1). {3} did not have polyA sites within 200 nt of the orthologous human genome location.'.format(transcriptcounter, longUTRcounter, tslcounter, notinvalidwindowscounter))
 	os.remove('temp.bed')
 	os.remove('temp.sorted.bed')
 	
 	return mergedexons
 
+def filtergenes(genesyouwant, mergedexons):
+	#Taking in a file of genes you want to make oligos from, filter merged exons to only contain those genes.
 
-def filterexpression(tpmtable, mergedexons):
-	#For the human oligos, this expression is still expression of mouse genes.  What we need to get is the human orthologs of the 
-	#mouse genes that pass the expression filter.
+	#Figure out how many genes are in this file
+	genes = []
+	with open(genesyouwant, 'r') as infh:
+		genecounter = 0
+		for line in infh:
+			line = line.strip()
+			genecounter +=1
+			genes.append(line)
 
-	print 'Filtering by expression...'
-	genesbeforefilter = len(mergedexons)
-	#Given a table of tpm expression values, filter for genes that pass some expression cutoff.
-	df = pd.read_csv(tpmtable, sep = '\t', header = 0)
+	print('Looking for {0} genes...'.format(genecounter))
 
-	#The P70brain1 sample looked funky by PCA/clustering, so I dropped it
-	#Also, the cerebellum is quite different than the rest of the brain, so I dropped those samples too
-
-	df = df.drop(['P70brain1', 'P56cerebellum1', 'P56cerebellum2'], axis = 1)
-
-	#Add a column of the minimum expression across all samples for that gene
-	df['minexp'] = df.loc[:, ['E18brain1', 'E18brain2', 'P56cortex1', 'P56cortex2', 'P56cortex3', 'P56cortex4', 'P70brain2']].min(axis = 1)
-
-	#Get all genes that have a minimum expression across samples of at least x tpm
-	df = df.query('minexp >= 10')
-	expressedgenes = df['ensembl_gene_id'].tolist()
-
-	print '{0} mouse genes pass expression filters.'.format(len(expressedgenes))
-
-	#Get mouse/human ortholog relationships
-	#biomaRt is a bitch and won't connect all the time anymore
-	#try to connect until we do
-	hasm2h = False
-	while hasm2h == False:
-		try:
-			m2h = getmouseens2humanens()
-			hasm2h = True
-		except RRuntimeError:
-			print 'Trying to reconnect to biomaRt...' #try again
-
-	#See which human orthologs pass expression
-	humanpassinggenes = []
-	for gene in expressedgenes:
-		try:
-			humangene = m2h[gene]
-		except KeyError:
-			print 'Mouse gene {0} not in mouse2human dictionary.'.format(gene)
-		humanpassinggenes.append(humangene)
-
-	humanpassinggenes = list(set(humanpassinggenes))
-	print 'Starting with {0} mouse genes that pass expression, found {1} human orthologs.'.format(len(expressedgenes), len(humanpassinggenes))
-
-	#For genes in mergedexons, if that gene isn't in humanpassinggenes, remove it
-	for gene in mergedexons.keys():
-		if gene not in humanpassinggenes:
+	#For genes in mergedexons, if that gene isn't in expressedgenes, remove it
+	for gene in list(mergedexons):
+		if gene not in genes:
 			del mergedexons[gene]
 
-	print '{0} of {1} genes pass expression filter.'.format(len(mergedexons), genesbeforefilter)
+	print('Found {0} of {1} genes that we looked for.'.format(len(mergedexons), genecounter))
 	return mergedexons
 
-def filterlocalization(lrtable, mergedexons):
-	#In this strategy, instead of filtering for genes that are expressed in brain, filter for genes that are known to be localized.
-	#This way we will find the fragment within the 3' UTR that is driving localization.
-	#The LR data comes from the "Bartel analysis" and is usually FractionationLR_z.txt.
-	#It's z scores of LR values for almost every fractionation/sequencing experiment we've done (about 30 of them).
-
-	#For the human oligos, this LR is still LR of mouse genes.  What we need to get is the human orthologs of the 
-	#mouse genes that pass the LR filter.
-
-	print 'Filtering by localization...'
-	genesbeforefilter = len(mergedexons)
-	#Given a table of tpm expression values, filter for genes that pass some expression cutoff.
-	df = pd.read_csv(lrtable, sep = '\t', header = 0)
-
-	df = pd.read_csv(lrtable, sep = '\t', header = 0)
-	#Get rid of the 'ribo' and 'mito' columns
-	#Also get rid of the Mbnl2_1 experiment. It's an outlier to every other experiment here.
-	df = df.drop(['ribo', 'mito', 'Mbnl2_1'], axis = 1)
-	#Get rid of any row that has an NA (didn't pass neurite and/or soma expression filter in a sample (tpm >= 5))
-	df = df.dropna(axis = 0, how = 'any')
-	#Get the median of all LRs for a gene
-	med = df.median(axis = 1, skipna = True, numeric_only = True)
-	df = df.assign(median = med)
-	#Filter for those that have <= -0.75 LRz (negctrls), > 0.5 LRz, or are Ranbp1 or Actb
-	query = 'median <= -0.7 | median > 0.38 | Gene == "Actb" | Gene == "Ranbp1"'
-	df = df.query(query)
-	chosengenes = df['ensembl_gene_id'].tolist()
-
-	print '{0} mouse genes pass LR filters.'.format(len(chosengenes))
-
-	#Get mouse/human ortholog relationships
-	#biomaRt is a bitch and won't connect all the time anymore
-	#try to connect until we do
-	hasm2h = False
-	while hasm2h == False:
-		try:
-			m2h = getmouseens2humanens()
-			hasm2h = True
-		except RRuntimeError:
-			print 'Trying to reconnect to biomaRt...' #try again
-
-	#See which human orthologs pass expression
-	humanpassinggenes = []
-	for gene in chosengenes:
-		try:
-			humangene = m2h[gene]
-		except KeyError:
-			print 'Mouse gene {0} not in mouse2human dictionary.'.format(gene)
-		humanpassinggenes.append(humangene)
-
-	humanpassinggenes = list(set(humanpassinggenes))
-	print 'Starting with {0} mouse genes that pass LR filter, found {1} human orthologs.'.format(len(chosengenes), len(humanpassinggenes))
-
-	#For genes in mergedexons, if that gene isn't in humanpassinggenes, remove it
-	for gene in mergedexons.keys():
-		if gene not in humanpassinggenes:
-			del mergedexons[gene]
-
-	print '{0} of {1} genes pass LR filter.'.format(len(mergedexons), genesbeforefilter)
-	return mergedexons
 
 def breakoligo(coords):
 	#Get breaks in consecutive oligo positions
 	#http://stackoverflow.com/questions/2361945/detecting-consecutive-integers-in-a-list
 	brokencoords = [] #[[exon1start, exon1stop], [exon2start, exon2stop]]
-	for k, g in groupby(enumerate(coords), lambda (index, item): index-item):
-		exonbp = map(itemgetter(1), g)
+	for k, g in groupby(enumerate(coords), lambda ix: ix[0] - ix[1]):
+		exonbp = list(map(itemgetter(1), g))
 		if len(exonbp) > 1:
 			brokencoords.append([exonbp[0], exonbp[-1]])
 
 	return brokencoords
 
-def cutexons(coords):
+
+def cutexons(coords, stepsize):
 	#For an entry in mergedexons, split it up into oligos
 	strand = coords[1]
 	exons = coords[2]
@@ -527,12 +432,11 @@ def cutexons(coords):
 				exonend = exon[1]
 				currentpos = exonstart
 				#This is confusing but because the gff is 1-based and open, an oligo that is x to x + 109 will actually be length 110
-				#This is confusing but because the gff is 1-based and open, an oligo that is x to x + 159 will actually be length 160
 				while currentpos + 109 <= exonend:
 					oligostart = currentpos
 					oligoend = currentpos + 109
 					oligos.append([[oligostart, oligoend]])
-					currentpos += 44 #for 2.5X coverage (160 / 2.5 or 110 / 2.5)
+					currentpos += stepsize 
 				#If the final oligo does not lie flush with the end of the exon, make one more oligo that does
 				if currentpos != exonend:
 					oligos.append([[exonend - 109, exonend]])
@@ -550,7 +454,7 @@ def cutexons(coords):
 					oligoend = currentpos #these coords are back to having start < end
 					oligostart = currentpos - 109
 					oligos.append([[oligostart, oligoend]])
-					currentpos -= 44 #for 2.5X coverage (160 / 2.5 or 110 / 2.5)
+					currentpos -= stepsize 
 				#If the final oligo does not lie flush with the end of the exon, make one more oligo that does
 				if currentpos != exonend:
 					oligos.append([[exonend, exonend + 109]])
@@ -562,8 +466,8 @@ def cutexons(coords):
 			for exon in exons:
 				exoniccoords += range(exon[0], exon[1] + 1)
 			currentposindex = 0
-			#This is slightly different than the single-exon example above. Here we are stepping along indices, so we need the oligo to go from index x to index x + 160.
-			#This will give coordinates that are 159 "places" apart
+			#This is slightly different than the single-exon example above. Here we are stepping along indices, so we need the oligo to go from index x to index x + 110.
+			#This will give coordinates that are 109 "places" apart
 			while currentposindex + 110 <= len(exoniccoords):
 				oligostart = currentposindex
 				oligoend = currentposindex + 110
@@ -571,7 +475,7 @@ def cutexons(coords):
 				#We might need to break this oligo because it may have crossed an exon/exon boundary
 				oligocoords = breakoligo(oligocoords) #if this doesn't cross a boundary, its now [[start, stop]]. if it does, its [[start1, stop1], [start2, stop2], [start3, stop3]]
 				oligos.append(oligocoords) 
-				currentposindex += 44
+				currentposindex += stepsize
 			#If the final oligo does not lie flush with the end of the last exon, make one more oligo that does
 			if currentposindex != len(exoniccoords):
 				oligocoords = exoniccoords[-110:]
@@ -592,7 +496,7 @@ def cutexons(coords):
 				oligocoords.reverse() #flip it back around so that startcoord < endcoord
 				oligocoords = breakoligo(oligocoords)
 				oligos.append(oligocoords)
-				currentposindex += 44
+				currentposindex += stepsize
 			#If the final oligo does not lie flush with the end of the last exon, make one more oligo that does
 			if currentposindex != len(exoniccoords):
 				oligocoords = exoniccoords[-110:]
@@ -600,23 +504,20 @@ def cutexons(coords):
 				oligocoords = breakoligo(oligocoords)
 				oligos.append(oligocoords)
 
-
 	for junction in junctions:
-		jo1 = junction[0:110]
-		jo2 = junction[44:154]
-		jo3 = junction[88:198]
+		joligoindicieslist = []
+		for i in list(range(len(junction)))[::stepsize]:
+			joligoindicies = junction[i : i + 110]
+			if len(joligoindicies) == 110:
+				joligoindicieslist.append(joligoindicies)
 
-		#jo1 = junction[0:160]
-		#jo2 = junction[64:224]
-		#jo3 = junction[128:288]
-
-		for oligo in [jo1, jo2, jo3]:
+		for oligo in joligoindicieslist:
 			brokencoords = breakoligo(oligo)
 			junctionoligos.append(brokencoords)
 
 	return oligos, junctionoligos
 
-def makeoligos(mergedexons):
+def makeoligos(mergedexons, stepsize):
 	#Go through merged exons.
 	#Feed every gene to cutexons to receive back oligo coordinates
 	oligocoords = {} #{gene : [chrm, strand, [oligos]]} #For oligos that do not have introns, i.e. continuous oligos
@@ -626,13 +527,14 @@ def makeoligos(mergedexons):
 		coords = mergedexons[gene]
 		chrm = coords[0]
 		strand = coords[1]
-		oligos, junctionoligos = cutexons(coords)
+		oligos, junctionoligos = cutexons(coords, stepsize)
 		if oligos:
 			oligocoords[gene] = [chrm, strand, oligos]
 		if junctionoligos:
 			junctionoligocoords[gene] = [chrm, strand, junctionoligos]
 
 	return oligocoords, junctionoligocoords
+
 
 def flatten(x):
 	#Recursively flatten a list
@@ -644,7 +546,7 @@ def flatten(x):
 
 
 def makegff(oligocoords, junctionoligocoords, genenames):
-	with open('oligos.hg38.gff', 'w') as outfh:
+	with open('temp.gff', 'w') as outfh:
 		for gene in oligocoords:
 			chrm = oligocoords[gene][0]
 			strand = oligocoords[gene][1]
@@ -679,21 +581,21 @@ def makegff(oligocoords, junctionoligocoords, genenames):
 						elif strand == '-':
 							oligostart -= 1
 					oligocounter +=1
-					oligooutlist = [chrm, 'hg38', 'oligo', str(oligostart), str(oligoend), '.', strand, '.', 'ID={0}.{1}'.format(gene, oligocounter) + ';gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';oligo_id={0}.{1}'.format(gene, oligocounter) + ';oligo_type=regular_oneexon' + ';Parent={0}.UTR'.format(gene)]
+					oligooutlist = [chrm, 'mm10', 'oligo', str(oligostart), str(oligoend), '.', strand, '.', 'ID={0}.{1}'.format(gene, oligocounter) + ';gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';oligo_id={0}.{1}'.format(gene, oligocounter) + ';oligo_type=regular_oneexon' + ';Parent={0}.UTR'.format(gene)]
 					oligooutlists.append(oligooutlist)
 				elif len(oligo) > 1: #if this oligo spans multiple exons
 					oligocounter +=1
 					numberofpieces = len(oligo)
 					oligostart = oligo[0][0]
 					oligoend = oligo[-1][1]
-					oligooutlist = [chrm, 'hg38', 'oligo', str(oligostart), str(oligoend), '.', strand, '.', 'ID={0}.{1}'.format(gene, oligocounter) + ';gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';oligo_id={0}.{1}'.format(gene, oligocounter) + ';oligo_type=regular_multiexon' + ';Parent={0}.UTR'.format(gene)]
+					oligooutlist = [chrm, 'mm10', 'oligo', str(oligostart), str(oligoend), '.', strand, '.', 'ID={0}.{1}'.format(gene, oligocounter) + ';gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';oligo_id={0}.{1}'.format(gene, oligocounter) + ';oligo_type=regular_multiexon' + ';Parent={0}.UTR'.format(gene)]
 					piececounter = 0
 					oligooutlists.append(oligooutlist)
 					for piece in oligo:
 						piececounter +=1
 						piecestart = piece[0]
 						pieceend = piece[1]
-						oligooutlist = [chrm, 'hg38', 'oligopiece', str(piecestart), str(pieceend), '.', strand, '.', 'ID={0}.{1}.{2}'.format(gene, oligocounter, piececounter) + ';gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';oligo_id={0}.{1}.{2}'.format(gene, oligocounter, piececounter) + ';oligo_type=regularmultiexon' + ';Parent={0}.{1}'.format(gene, oligocounter)]
+						oligooutlist = [chrm, 'mm10', 'oligopiece', str(piecestart), str(pieceend), '.', strand, '.', 'ID={0}.{1}.{2}'.format(gene, oligocounter, piececounter) + ';gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';oligo_id={0}.{1}'.format(gene, oligocounter) + ';oligo_type=regularmultiexon' + ';Parent={0}.{1}'.format(gene, oligocounter)]
 						oligooutlists.append(oligooutlist)
 
 			#Make lines for junction oligos
@@ -706,41 +608,97 @@ def makegff(oligocoords, junctionoligocoords, genenames):
 					oligocounter +=1
 					junctioncounter +=1
 					piececounter = 0
-					oligooutlist = [chrm, 'hg38', 'oligo', str(oligostart), str(oligoend), '.', strand, '.', 'ID={0}.{1}'.format(gene, oligocounter) + ';gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';oligo_id={0}.{1}'.format(gene, oligocounter) + ';oligo_type=junction' + ';Parent={0}.UTR'.format(gene)]
+					oligooutlist = [chrm, 'mm10', 'oligo', str(oligostart), str(oligoend), '.', strand, '.', 'ID={0}.{1}'.format(gene, oligocounter) + ';gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';oligo_id={0}.{1}'.format(gene, oligocounter) + ';oligo_type=junction' + ';Parent={0}.UTR'.format(gene)]
 					oligooutlists.append(oligooutlist)
 					for piece in oligo:
 						piececounter +=1
 						piecestart = piece[0]
 						pieceend = piece[1]
-						oligooutlist = [chrm, 'hg38', 'junctionpiece', str(piecestart), str(pieceend), '.', strand, '.', 'ID={0}.{1}.{2}'.format(gene, oligocounter, piececounter) + ';gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';oligo_id={0}.{1}'.format(gene, oligocounter) + ';oligo_type=junction' + ';Parent={0}.{1}'.format(gene, oligocounter)]
+						oligooutlist = [chrm, 'mm10', 'junctionpiece', str(piecestart), str(pieceend), '.', strand, '.', 'ID={0}.{1}.{2}'.format(gene, oligocounter, piececounter) + ';gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';oligo_id={0}.{1}'.format(gene, oligocounter) + ';oligo_type=junction' + ';Parent={0}.{1}'.format(gene, oligocounter)]
 						oligooutlists.append(oligooutlist)
 
 			#Make gene-level line
 			#This isn't actually the UTR.  It includes 50 nt or so of the coding sequence. It may not encompass the entire upstream coding region as a junction oligo piece may be further upstream than the first regular oligo start.
-			geneline = [chrm, 'hg38', 'UTR', str(UTRstart), str(UTRend), '.', strand, '.', 'gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';number_of_oligos={0}'.format(oligocounter) + ';ID={0}.UTR'.format(gene)]
+			geneline = [chrm, 'mm10', 'UTR', str(UTRstart), str(UTRend), '.', strand, '.', 'gene_id={0}'.format(gene) + ';gene_name={0}'.format(genenames[gene]) + ';number_of_oligos={0}'.format(oligocounter) + ';ID={0}.UTR'.format(gene)]
 
 			outfh.write(('\t').join(geneline) + '\n')
 			for oligooutlist in oligooutlists:
 				outfh.write(('\t').join(oligooutlist) + '\n')
 
-def gff2fasta(gff, genomefasta):
-	print 'Indexing gff...'
+
+def sortoligogff(gff, outfile):
+	#Because in the original gff produced by makegff the junctionoligos are added after all of the non-junction oligos have been written,
+	#this puts their oligo IDs out of order with respect to genomic position.  Junction oligos account for ~5% of all oligos so it's not a big deal,
+	#but still, we would like to fix this.
+
+	#The easiest way to do this is to read in the original gff, sort the oligos for each UTR, then write a new one.
+
+	print('Indexing gff...')
 	gff_fn = gff
 	db_fn = os.path.abspath(gff_fn) + '.db'
 	gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
 
 	db = gffutils.FeatureDB(db_fn)
-	print 'Done indexing!'
+	print('Done indexing!')
 
-	print 'Indexing genome sequence...'
-	seq_dict = SeqIO.to_dict(SeqIO.parse(gzip.open(genomefasta), 'fasta'))
-	print 'Done indexing!'
+	utrs = db.features_of_type('UTR')
+
+	with open(outfile, 'w') as outfh:
+		for utr in utrs:
+			gene = str(utr.id).split('.')[0]
+			outfh.write(('\t').join([str(utr.chrom), 'mm10', 'UTR', str(utr.start), str(utr.end), '.', str(utr.strand), '.', 'gene_id={0};gene_name={1};number_of_oligos={2};ID={3}'.format(utr.attributes['gene_id'][0], utr.attributes['gene_name'][0], utr.attributes['number_of_oligos'][0], utr.attributes['ID'][0])]) + '\n')
+			if utr.strand == '+':
+				oligocounter = 0
+				for oligo in db.children(utr, featuretype = 'oligo', order_by = 'start'):
+					oligocounter +=1
+					outfh.write(('\t').join([str(oligo.chrom), 'mm10', 'oligo', str(oligo.start), str(oligo.end), '.', str(oligo.strand), '.', 'ID={0}.{1};gene_id={2};gene_name={3};oligo_id={4}.{5};oligo_type={6};Parent={7}'.format(utr.attributes['gene_id'][0], oligocounter, utr.attributes['gene_id'][0], utr.attributes['gene_name'][0], utr.attributes['gene_id'][0], oligocounter, oligo.attributes['oligo_type'][0], oligo.attributes['Parent'][0])]) + '\n')
+					if oligo.attributes['oligo_type'][0] == 'regular_multiexon':
+						piececounter = 0
+						for oligopiece in db.children(oligo, featuretype = 'oligopiece', order_by = 'start'):
+							piececounter +=1
+							outfh.write(('\t').join([str(oligo.chrom), 'mm10', 'oligopiece', str(oligopiece.start), str(oligopiece.end), '.', str(oligopiece.strand), '.', 'ID={0}.{1}.{2};gene_id={3};gene_name={4};oligo_id={5}.{6};oligo_type{7};Parent={8}'.format(utr.attributes['gene_id'][0], oligocounter, piececounter, utr.attributes['gene_id'][0], utr.attributes['gene_name'][0], utr.attributes['gene_id'][0], oligocounter, oligo.attributes['oligo_type'][0], utr.attributes['gene_id'][0], oligocounter)]) + '\n')
+					if oligo.attributes['oligo_type'][0] == 'junction':
+						piececounter = 0
+						for oligopiece in db.children(oligo, featuretype = 'oligopiece', order_by = 'start'):
+							piececounter +=1
+							outfh.write(('\t').join([str(oligo.chrom), 'mm10', 'junctionpiece', str(oligopiece.start), str(oligopiece.end), '.', str(oligopiece.strand), '.', 'ID={0}.{1}.{2};gene_id={3};gene_name={4};oligo_id={5}.{6};oligo_type{7};Parent={8}'.format(utr.attributes['gene_id'][0], oligocounter, piececounter, utr.attributes['gene_id'][0], utr.attributes['gene_name'][0], utr.attributes['gene_id'][0], oligocounter, oligo.attributes['oligo_type'][0], utr.attributes['gene_id'][0], oligocounter)]) + '\n')
+
+			elif utr.strand == '-':
+				oligocounter = 0
+				for oligo in db.children(utr, featuretype = 'oligo', order_by = 'end', reverse = True):
+					oligocounter +=1
+					outfh.write(('\t').join([str(oligo.chrom), 'mm10', 'oligo', str(oligo.start), str(oligo.end), '.', str(oligo.strand), '.', 'ID={0}.{1};gene_id={2};gene_name={3};oligo_id={4}.{5};oligo_type={6};Parent={7}'.format(utr.attributes['gene_id'][0], oligocounter, utr.attributes['gene_id'][0], utr.attributes['gene_name'][0], utr.attributes['gene_id'][0], oligocounter, oligo.attributes['oligo_type'][0], oligo.attributes['Parent'][0])]) + '\n')
+					if oligo.attributes['oligo_type'][0] == 'regular_multiexon':
+						piececounter = 0
+						for oligopiece in db.children(oligo, featuretype = 'oligopiece', order_by = 'start'):
+							piececounter +=1
+							outfh.write(('\t').join([str(oligo.chrom), 'mm10', 'oligopiece', str(oligopiece.start), str(oligopiece.end), '.', str(oligopiece.strand), '.', 'ID={0}.{1}.{2};gene_id={3};gene_name={4};oligo_id={5}.{6};oligo_type{7};Parent={8}'.format(utr.attributes['gene_id'][0], oligocounter, piececounter, utr.attributes['gene_id'][0], utr.attributes['gene_name'][0], utr.attributes['gene_id'][0], oligocounter, oligo.attributes['oligo_type'][0], utr.attributes['gene_id'][0], oligocounter)]) + '\n')
+					if oligo.attributes['oligo_type'][0] == 'junction':
+						piececounter = 0
+						for oligopiece in db.children(oligo, featuretype = 'oligopiece', order_by = 'start'):
+							piececounter +=1
+							outfh.write(('\t').join([str(oligo.chrom), 'mm10', 'junctionpiece', str(oligopiece.start), str(oligopiece.end), '.', str(oligopiece.strand), '.', 'ID={0}.{1}.{2};gene_id={3};gene_name={4};oligo_id={5}.{6};oligo_type{7};Parent={8}'.format(utr.attributes['gene_id'][0], oligocounter, piececounter, utr.attributes['gene_id'][0], utr.attributes['gene_name'][0], utr.attributes['gene_id'][0], oligocounter, oligo.attributes['oligo_type'][0], utr.attributes['gene_id'][0], oligocounter)]) + '\n')
+
+	os.remove(db_fn)
+
+def gff2fasta(gff, genomefasta):
+	print('Indexing gff...')
+	gff_fn = gff
+	db_fn = os.path.abspath(gff_fn) + '.db'
+	gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
+
+	db = gffutils.FeatureDB(db_fn)
+	print('Done indexing!')
+
+	print('Indexing genome sequence...')
+	seq_dict = SeqIO.to_dict(SeqIO.parse(gzip.open(genomefasta, 'rt'), 'fasta'))
+	print('Done indexing!')
 
 	oligos = db.features_of_type('oligo')
 	seqs = {} #{oligoname : seq}
 	oligonames = [] #list of oligoIDs, this is so we can order the oligos when we write the fasta
-	adapter5 = 'GCGCTTAATTAAGGCGCGTA'
-	adapter3 = 'GACTATGGCGCGCCAGTATA'
+	adapter5 = 'GCTTCGATATCCGCATGCTA'
+	adapter3 = 'CTCTTGCGGTCGCACTAGTG'
 
 	for oligo in oligos:
 		chrm = oligo.chrom
@@ -795,7 +753,7 @@ def gff2fasta(gff, genomefasta):
 			seqs[oligoname] = seq
 			oligonames.append(oligoname)
 
-	with open('oligos.hg38.fa', 'w') as outfh:
+	with open('oligos.mm10.fa', 'w') as outfh:
 		for oligoname in oligonames:
 			seq = seqs[oligoname]
 			seq = adapter5 + seq + adapter3
@@ -803,25 +761,25 @@ def gff2fasta(gff, genomefasta):
 
 	os.remove(db_fn)
 
-
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--gff', type = str, help = 'GFF file of genome to make oligos from.')
 	parser.add_argument('--othergenomegff', type = str, help = 'GFF file of genome in which we will look for orthologous polyA sites.')
-	parser.add_argument('--filter', type = str, choices = ['expression', 'localization'], help = 'How to pick the genes to make oligos from? Brain-expressed genes or localized genes?')
-	parser.add_argument('--filterdata', type = str, help = 'Data to perform the filtering with.  TPMtable.txt if expression. FractionationLR_z if localization.')
+	parser.add_argument('--filterdata', type = str, help = 'File containing genes to make oligos from.')
 	parser.add_argument('--genomefasta', type = str, help = 'Sequence in fasta format for the genome to make oligos from.')
+	parser.add_argument('--stepsize', type = int, help = 'Step size from one oligo to the next.')
 	args = parser.parse_args()
 
 	#Find orthologous polyA sites
 	validwindows = getothergenomepolyA(args.othergenomegff)
+	#pickle.dump(validwindows, open('validwindows.pkl', 'wb'))
+	#validwindows = pickle.load(open('validwindows.pkl', 'rb'))
 	#Find UTRs that pass transcript and polyA site filters
-	mergedexons = iterategff(args.gff, validwindows)
-	#Filter for expressed or localized genes
-	if args.filter == 'expression':
-		mergedexons = filterexpression(args.filterdata, mergedexons)
-	elif args.filter == 'localization':
-		mregedexons = filterlocalization(args.filterdata, mergedexons)
+	mergedexons = iterategff(args.gff, validwindows, args.stepsize)
+	#pickle.dump(mergedexons, open('mergedexons.pkl', 'wb'))
+	#mergedexons = pickle.load(open('mergedexons.pkl', 'rb'))
+	mergedexons = filtergenes(args.filterdata, mergedexons)
+
 	#Get ensembl gene ID / genename relationships
 	genenames = getgenenames(args.gff)
 
@@ -836,9 +794,9 @@ if __name__ == '__main__':
 			for junctionblock in junctionblocks:
 				UTRsize += len(junctionblock)
 
-	print 'After filtering, end up with {0} nt of UTR sequence.'.format(UTRsize)
+	print('After filtering, end up with {0} nt of UTR sequence.'.format(UTRsize))
 
-	oligocoords, junctionoligocoords = makeoligos(mergedexons)
+	oligocoords, junctionoligocoords = makeoligos(mergedexons, args.stepsize)
 
 	#Print how many oligos this gets broken into
 	oligocount = 0
@@ -849,10 +807,12 @@ if __name__ == '__main__':
 		oligos = junctionoligocoords[gene][2]
 		oligocount += len(oligos)
 
-	print 'This is broken up into {0} oligos.'.format(oligocount)
+	print('This is broken up into {0} oligos.'.format(oligocount))
 
 	#Make oligo gff
 	makegff(oligocoords, junctionoligocoords, genenames)
+	#Sort that gff
+	sortoligogff('temp.gff', 'oligos.mm10.gff')
+	os.remove('temp.gff')
 	#Make fasta
-	gff2fasta('oligos.hg38.gff', args.genomefasta)
-
+	gff2fasta('oligos.mm10.gff', args.genomefasta)
