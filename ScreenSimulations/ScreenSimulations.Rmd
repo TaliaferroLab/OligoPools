@@ -1,0 +1,104 @@
+---
+title: "ScreenSimulations"
+author: "Matthew Taliaferro"
+date: "7/9/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Simulation of the cis-element screen using ~10000 oligos drawn from the sequence of human chr1.  This was done by defining "UTRs" within chr1 that ranged from 500 to 5000 nt long.  The step sizes of these pools were either 2, 5, or 10 nt.  A mock fastq was then made from these oligos and contained 10M reads.  In those reads, 1nt deletions and mutations are also simulated at a per-base rate of 0.0001, and 0.002, respectively.  In these reads, the forward read contains the first 97 nt of the oligo and the reverse read contains the last 91 nt of the oligo.  This is done to mimic the situation after adapter trimming in the real reads. This is all done with simulatescreen.py.  
+
+These reads are then mapped back to the oligos using bowtie2: bowtie2 -q --end-to-end --fr --no-discordant --no-unal -p 4 -x Bowtie2Index/index -1 forreads.fastq -2 revreads.fastq -S sample.sam
+
+In the step2 reads, 99.6% of the reads were accurately mapped.
+In the step5 reads, 99.9% of the reads were accurately mapped.
+In the step10 reads, 99.9% of the reads were accurately mapped.
+
+The sam is the analyzed to ask how many of the reads were accurately mapped.  This is also done with simulatescreen.py
+
+```{r}
+library(tidyverse)
+library(cowplot)
+```
+
+Read in data and plot acutal counts vs read counts.
+```{r, fig.height= 7, fig.width=9}
+s2 <- read.table('~/Documents/Denver/cisElementScreen/ScreenSimulations/samresults.step2.txt', header = T)
+s5 <- read.table('~/Documents/Denver/cisElementScreen/ScreenSimulations/samresults.step5.txt', header = T)
+s10 <- read.table('~/Documents/Denver/cisElementScreen/ScreenSimulations/samresults.step10.txt', header = T)
+
+s2.r <- signif(cor.test(s2$actualcounts, s2$mappedcounts, method = 'pearson')$estimate, 4)
+s2.p <- ggplot(s2, aes(x = log(actualcounts), y = log(mappedcounts))) + geom_point(alpha = 0.1) + theme_classic(16) + xlab('Acutal counts, log10') + ylab('Mapped counts, log10') +
+  annotate('text', x = 2, y = 7, label = paste0('R = ', s2.r)) +
+  annotate('text', x = 2, y = 6, label = '99.6% of reads\nmapped correctly') + ggtitle('2 nt step size')
+
+s5.r <- signif(cor.test(s5$actualcounts, s5$mappedcounts, method = 'pearson')$estimate, 4)
+s5.p <- ggplot(s5, aes(x = log(actualcounts), y = log(mappedcounts))) + geom_point(alpha = 0.1) + theme_classic(16) + xlab('Acutal counts, log10') + ylab('Mapped counts, log10') +
+  annotate('text', x = 2, y = 7, label = paste0('R = ', s5.r)) +
+  annotate('text', x = 2, y = 6, label = '99.9% of reads\nmapped correctly') + ggtitle('5 nt step size')
+
+s10.r <- signif(cor.test(s10$actualcounts, s10$mappedcounts, method = 'pearson')$estimate, 4)
+s10.p <- ggplot(s10, aes(x = log(actualcounts), y = log(mappedcounts))) + geom_point(alpha = 0.1) + theme_classic(16) + xlab('Acutal counts, log10') + 
+  ylab('Mapped counts, log10') +
+  annotate('text', x = 2, y = 7, label = paste0('R = ', s10.r)) +
+  annotate('text', x = 2, y = 6, label = '99.9% of reads\nmapped correctly') + ggtitle('10 nt step size')
+
+plot_grid(s2.p, s5.p, s10.p)
+```
+
+OK this looks pretty decent, but for the 2nt step size, only 72.4% of oligos have their correct number of counts.  97.8% of oligos have counts within 10% of their correct number of counts.
+
+For the 5nt step size, these numbers are 91.1% and 99.0%, respectively.
+For the 10nt step size, these numbers are 96.9% and 99.7%, respectively.
+
+For the misassigned reads in the 2nt data, do they tend to have lower mapping qualities? (Mapping qualities also compiled using simulatescreen.py from the sam files).
+Yes it looks like they do!  
+```{r}
+s2.mapqs <- read.table('~/Documents/Denver/cisElementScreen/ScreenSimulations/mapqs.txt', header = T)
+
+ggplot(s2.mapqs, aes(x = mapq, color = readstatus, fill = readstatus)) + geom_histogram(binwidth = 1, aes(y = ..density..), alpha = 0.5, position = 'identity') + 
+  scale_color_manual(values = c('gray', 'red'), name = '', labels = c('Correctly\nmapped', 'Incorrectly\nmapped')) +
+  scale_fill_manual(values = c('gray', 'red'), name = '', labels = c('Correctly\nmapped', 'Incorrectly\nmapped')) + 
+  xlab('Mapping quality') + ylab('Fraction of reads')
+```
+
+OK so maybe bowtie is finding some alignments that are OK but low quality, trying to find some higher quality ones, but not finding any better ones before it gives up and reports the low quality, incorrect one.  The bowtie2 parameter that changes this behavior is -D.  -D is an integer that controls how many consecutive fails at finding a better alignment than the current top hit are allowed before it gives up.  The default value for this is 15.  So bowtie finds an alignment, then looks for a better one.  If it doesn't find a better one after 15 consecutive tries, it gives up and reports the best one it has.  So maybe if we increased D, that would make bowtie look more extensively for better matches, giving more time for the true, correct alignment to be found.
+
+To test this, reran bowtie with the same options as before but included -D 150:
+bowtie2 -q --end-to-end --fr --no-discordant --no-unal -p 4 -x Bowtie2Index/index -1 forreads.fastq -2 revreads.fastq -S sample.sam -D 150
+
+In the step2 reads, 100.0% of the reads were accurately mapped.
+In the step5 reads, 100.0% of the reads were accurately mapped.
+In the step10 reads, 99.9% of the reads were accurately mapped.
+
+This may have improved things quite a bit!
+
+```{r, fig.height= 7, fig.width=9}
+s2.d150 <- read.table('~/Documents/Denver/cisElementScreen/ScreenSimulations/samresults.step2.d150.txt', header = T)
+s5.d150 <- read.table('~/Documents/Denver/cisElementScreen/ScreenSimulations/samresults.step5.d150.txt', header = T)
+s10.d150 <- read.table('~/Documents/Denver/cisElementScreen/ScreenSimulations/samresults.step10.d150.txt', header = T)
+
+s2.d150.r <- signif(cor.test(s2.d150$actualcounts, s2.d150$mappedcounts, method = 'pearson')$estimate, 4)
+s2.d150.p <- ggplot(s2.d150, aes(x = log(actualcounts), y = log(mappedcounts))) + geom_point(alpha = 0.1) + theme_classic(16) + xlab('Acutal counts, log10') + 
+  ylab('Mapped counts, log10') +
+  annotate('text', x = 2, y = 7, label = paste0('R = ', s2.d150.r)) +
+  annotate('text', x = 2, y = 6, label = '100.0% of reads\nmapped correctly') + ggtitle('2 nt step size')
+
+s5.d150.r <- signif(cor.test(s5.d150$actualcounts, s5.d150$mappedcounts, method = 'pearson')$estimate, 4)
+s5.d150.p <- ggplot(s5.d150, aes(x = log(actualcounts), y = log(mappedcounts))) + geom_point(alpha = 0.1) + theme_classic(16) + xlab('Acutal counts, log10') + 
+  ylab('Mapped counts, log10') +
+  annotate('text', x = 2, y = 7, label = paste0('R = ', s5.d150.r)) +
+  annotate('text', x = 2, y = 6, label = '100.0% of reads\nmapped correctly') + ggtitle('5 nt step size')
+
+s10.d150.r <- signif(cor.test(s10.d150$actualcounts, s10.d150$mappedcounts, method = 'pearson')$estimate, 4)
+s10.d150.p <- ggplot(s10.d150, aes(x = log(actualcounts), y = log(mappedcounts))) + geom_point(alpha = 0.1) + theme_classic(16) + xlab('Acutal counts, log10') + 
+  ylab('Mapped counts, log10') +
+  annotate('text', x = 2, y = 7, label = paste0('R = ', s10.d150.r)) +
+  annotate('text', x = 2, y = 6, label = '99.9% of reads\nmapped correctly') + ggtitle('10 nt step size')
+
+plot_grid(s2.d150.p, s5.d150.p, s10.d150.p)
+```
+
