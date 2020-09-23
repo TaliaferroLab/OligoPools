@@ -46,12 +46,12 @@ def getntcoverage(umicounts, stepsize, oligosize, smoothcoverage):
 			oligostart = (oligopos - 1) * stepsize
 			ntscovered = list(range(oligostart, oligostart + oligosize + 1))
 			umicount = int(line[2])
-			normalizedumicount = umicount / totalcounts
+			#normalizedumicount = umicount / totalcounts
 			for nt in ntscovered:
 				if nt not in ntcoverage[utr]:
-					ntcoverage[utr][nt] = [normalizedumicount]
+					ntcoverage[utr][nt] = [umicount]
 				else:
-					ntcoverage[utr][nt].append(normalizedumicount)
+					ntcoverage[utr][nt].append(umicount)
 
 	for utr in ntcoverage:
 		medianntcoverage[utr] = {}
@@ -77,7 +77,7 @@ def getntcoverage(umicounts, stepsize, oligosize, smoothcoverage):
 					except KeyError:
 						pass
 				else:
-					window = range(i - ((windowsize - 1) / 2), i + ((windowsize + 1) / 2))
+					window = range(i - int(((windowsize - 1) / 2)), i + int(((windowsize + 1) / 2)))
 					windowmedians = []
 					for j in window:
 						try:
@@ -85,7 +85,7 @@ def getntcoverage(umicounts, stepsize, oligosize, smoothcoverage):
 						except KeyError:
 							pass
 					smoothvalue = np.mean(windowmedians)
-					smoothntcoverage[utr][i] = smoothvalue
+					smoothntcoverage[utr][i] = round(smoothvalue, 3)
 
 
 		return smoothntcoverage
@@ -93,7 +93,7 @@ def getntcoverage(umicounts, stepsize, oligosize, smoothcoverage):
 def collatereplicates(sampconds):
 	#Given a file that tells how replicates are arranged, collate a 
 	#pandas df of oligo umi counts
-	samps = {}
+	samps = {} #{condition : [sample1, sample2, ...]}
 	samps['conditionA'] = []
 	samps['conditionB'] = []
 	with open(sampconds, 'r') as infh:
@@ -104,53 +104,33 @@ def collatereplicates(sampconds):
 			samps['conditionA'].append(line[0])
 			samps['conditionB'].append(line[1])
 
-	condAcoverage = []
-	condBcoverage = []
-	for samp in samps['conditionA']:
+	allsamps = samps['conditionA'] + samps['conditionB']
+	sampnames = [os.path.basename(samp) for samp in allsamps]
+	coverages = [] #list of coverage dictionaries, samples in same order as allsamps
+
+	#For each sample, make a one column dataframe where the rows are UTR-nt positions
+	allsampdfs = []
+	for idx, samp in enumerate(allsamps):
 		print('Calculating coverage for {0}...'.format(samp))
 		coverage = getntcoverage(samp, 4, 260, True) #{utr : {nt : coverage}}
-		condAcoverage.append(coverage)
-	for samp in samps['conditionB']:
-		print('Calculating coverage for {0}...'.format(samp))
-		coverage = getntcoverage(samp, 4, 260, True)
-		condBcoverage.append(coverage)
+		dfs = []
+		for utr in coverage:
+			df = pd.DataFrame.from_dict([coverage[utr]], orient = 'columns')
+			cnames = list(df.columns.values)
+			cnames = [utr + '_' + str(c) for c in cnames]
+			df.columns = cnames
+			df = df.transpose()
+			df.columns = [sampnames[idx]]
+			dfs.append(df)
+		df = pd.concat(dfs, axis = 0)
+		allsampdfs.append(df)
 
-	#calculate log2FC at each nt
-	log2fcdict = {} #{utr : {nt : log2FC (B/A)}}
-	#define a reference coverage dict that we will use to loop through
-	refdict = condAcoverage[0]
-	for utr in refdict:
-		log2fcdict[utr] = {}
-		for nt in refdict[utr]:
-			condAntcoverages = []
-			condBntcoverages = []
-			for samp in condAcoverage:
-				try:
-					coverage = samp[utr][nt]
-					condAntcoverages.append(coverage)
-				except KeyError:
-					print(utr, nt)
-					pass
-			for samp in condBcoverage:
-				try:
-					coverage = samp[utr][nt]
-					condBntcoverages.append(coverage)
-				except KeyError:
-					print(utr, nt)
-					pass
-			condAmeancoverage = np.mean(condAntcoverages)
-			condBmeancoverage = np.mean(condBntcoverages)
-			#add pseudocount
-			pc = 1e-3
-			condAmeancoverage = condAmeancoverage + pc
-			condBmeancoverage = condBmeancoverage + pc
-			log2FC = log2(condBmeancoverage / condAmeancoverage)
-			log2fcdict[utr][nt] = log2FC
+	#Perform outer join to bring all sample-level dfs together
+	bigdf = pd.concat(allsampdfs, axis = 1)
+	#There will be some NAs following this outer join, so replace the NAs with 0
+	bigdf = bigdf.fillna(value = 0.0)
 
-	#print(log2fcdict)
-	
-	#calculate pvalue for each nt
-
+	return bigdf
 
 #Take 'sampconds' list of UMI count files
 #collate ntcoverage dicts
@@ -160,16 +140,5 @@ def collatereplicates(sampconds):
 
 #To define "regions":
 #start at sig nt, allow max gap of <gap> nonsig nt
-collatereplicates(sys.argv[1])
-
-
-'''
-x = getntcoverage(sys.argv[1], 4, 260, True)
-
-with open('n2a20.txt', 'w') as outfh:
-	outfh.write(('\t').join(['utr', 'nt', 'coverage']) + '\n')
-	for utr in x:
-		for nt in x[utr]:
-			cov = str(x[utr][nt])
-			outfh.write(('\t').join([utr, str(nt), cov]) + '\n')
-'''
+bigdf = collatereplicates(sys.argv[1])
+print(bigdf.head())
