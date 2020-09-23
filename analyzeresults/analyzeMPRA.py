@@ -13,6 +13,7 @@ import os
 import numpy as np
 from math import log2
 import pandas as pd
+import numpy as np
 
 def getntcoverage(umicounts, stepsize, oligosize, smoothcoverage):
 	#Here we are going to get nt-level coverage. Oligo names are of the form
@@ -132,6 +133,21 @@ def collatereplicates(sampconds):
 
 	return bigdf
 
+def normalizecounts(countdf):
+	#Given a dataframe of umi counts per sample, perform quantile normalization
+	#See https://ai.recodeminds.com/news/computing-quantile-normalization-in-python/
+
+	#Sort each column
+	countdf_sorted = pd.DataFrame(np.sort(countdf.values, axis = 0), index = countdf.index, columns = countdf.columns)
+	#Compute row means
+	countdf_mean = countdf_sorted.mean(axis = 1)
+	countdf_mean.index = np.arange(1, len(countdf_mean) + 1)
+	#Use average values for each sample in the original order
+	countdf_qn = countdf.rank(method = 'min').stack().astype(int).map(countdf_mean).unstack()
+
+	return countdf_qn
+
+
 #Take 'sampconds' list of UMI count files
 #collate ntcoverage dicts
 #Take log2FC across condition of medians across replicates
@@ -141,4 +157,8 @@ def collatereplicates(sampconds):
 #To define "regions":
 #start at sig nt, allow max gap of <gap> nonsig nt
 bigdf = collatereplicates(sys.argv[1])
+bigdf_qn = normalizecounts(bigdf)
 print(bigdf.head())
+print(bigdf_qn.head())
+bigdf.to_csv(path_or_buf = 'bigdf.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
+bigdf_qn.to_csv(path_or_buf = 'bigdf_qn.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
