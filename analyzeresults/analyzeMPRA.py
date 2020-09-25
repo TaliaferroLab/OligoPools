@@ -502,22 +502,17 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 	condamads = []
 	condbmads = []
 	
-	samps = OrderedDict() #{condition : [sample1, sample2, ...]} this needs to be ordered because we will be iterating through it
-	samps['conditionA'] = []
-	samps['conditionB'] = []
-	with open(sampconds, 'r') as infh:
-		for line in infh:
-			line = line.strip().split('\t')
-			if line[0] == 'sample':
-				continue
-			if line[1] == conditionA:
-				samps['conditionA'].append(os.path.basename(line[0]))
-			elif line[1] == conditionB:
-				samps['conditionB'].append(os.path.basename(line[0]))
+	sampconddf = pd.read_csv(sampconds, sep = '\t', index_col = False, header = 0)
+	colnames = list(sampconddf.columns)
+	covariate_columns = [c for c in colnames if 'covariate' in c]
 
-	condasamps = samps['conditionA']
-	condbsamps = samps['conditionB']
+	condasamps = sampconddf.loc[sampconddf['condition'] == conditionA, 'sample'].tolist()
+	condbsamps = sampconddf.loc[sampconddf['condition'] == conditionB, 'sample'].tolist()
+	condasamps = [os.path.basename(samp) for samp in condasamps]
+	condbsamps = [os.path.basename(samp) for samp in condbsamps]
+
 	allsamps = condasamps + condbsamps
+	samps = OrderedDict({'conditionA' : condasamps, 'conditionB' : condbsamps})
 
 	print('Condition A samples: ' + (', ').join(condasamps))
 	print('Condition B samples: ' + (', ').join(condbsamps))
@@ -549,6 +544,16 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 		values = [log2(v + pc) for v in values]
 
 		d['value'] = values
+
+		if covariate_columns:
+			for covcol in covariate_columns:
+				covs= [] #classifications for this covariate 
+				for samp in allsamps:
+					cov = sampconddf.loc[sampconddf['sample'] == samp, covcol].tolist()[0]
+					covs.append(cov)
+				d[covcol] = covs
+
+			covariatestring = '+'.join(covariate_columns)
 
 		condavalues = values[:len(condasamps)]
 		condbvalues = values[len(condasamps):]
@@ -612,14 +617,20 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 					numberoftries +=1
 					try:
 						#actual model
-						md = smf.mixedlm('value ~ cond1', data = rowdf, groups = 'samples', missing = 'drop')
+						if covariate_columns:
+							md = smf.mixedlm('value ~ cond1' + '+' + covariatestring, data = rowdf, groups = 'samples', missing = 'drop')
+						else:
+							md = smf.mixedlm('value ~ cond1', data = rowdf, groups = 'samples', missing = 'drop')
 						if numberoftries == 0:
 							mdf = md.fit(reml = False) #REML needs to be false in order to use log-likelihood for pvalue calculation
 						elif numberoftries > 0:
 							mdf = md.fit(reml = False, start_params = [param])
 
 						#null model
-						nullmd = smf.mixedlm('value ~ 1', data = rowdf, groups = 'samples', missing = 'drop')
+						if covariate_columns:
+							nullmd = smf.mixedlm('value ~ ' + covariatestring, data = rowdf, groups = 'samples', missing = 'drop')
+						else:
+							nullmd = smf.mixedlm('value ~ 1', data = rowdf, groups = 'samples', missing = 'drop')
 						if numberoftries == 0:
 							nullmdf = nullmd.fit(reml = False)
 						elif numberoftries > 0:
