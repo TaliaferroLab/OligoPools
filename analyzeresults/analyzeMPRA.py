@@ -14,6 +14,11 @@ import numpy as np
 from math import log2
 import pandas as pd
 import numpy as np
+from collections import OrderedDict
+from statsmodels.robust.scale import mad as MAD
+from statsmodels.stats.multitest import multipletests
+from random import shuffle
+from scipy.stats import percentileofscore
 
 def getntcoverage(umicounts, stepsize, oligosize, smoothcoverage):
 	#Here we are going to get nt-level coverage. Oligo names are of the form
@@ -91,7 +96,7 @@ def getntcoverage(umicounts, stepsize, oligosize, smoothcoverage):
 
 		return smoothntcoverage
 
-def collatereplicates(sampconds):
+def collatereplicates(sampconds, conditionA, conditionB):
 	#Given a file that tells how replicates are arranged, collate a 
 	#pandas df of oligo umi counts
 	samps = {} #{condition : [sample1, sample2, ...]}
@@ -100,10 +105,12 @@ def collatereplicates(sampconds):
 	with open(sampconds, 'r') as infh:
 		for line in infh:
 			line = line.strip().split('\t')
-			if line[0] == 'conditionA':
+			if line[0] == 'sample':
 				continue
-			samps['conditionA'].append(line[0])
-			samps['conditionB'].append(line[1])
+			if line[1] == conditionA:
+				samps['conditionA'].append(line[0])
+			elif line[1] == conditionB:
+				samps['conditionB'].append(line[0])
 
 	allsamps = samps['conditionA'] + samps['conditionB']
 	sampnames = [os.path.basename(samp) for samp in allsamps]
@@ -287,6 +294,198 @@ def smoothcounts(ntdf, windowsize):
 
 	return bigdf
 
+def getlog2fc(countdf, sampconds, conditionA, conditionB):
+	#Given a df of nucleotide-level counts and a file telling which samples 
+	#belong to which condition, calculate mean counts for each condition
+	#across replicates and then log2FC between conditions
+	#log2FC are recorded as B/A
+
+	#countdf is a df where indicies (rownames) are utr_nt and colnames are samples
+	print('Calculating log2FC...')
+
+	log2fcdict = {} #{utr : {nt : log2FC}}
+
+	samps = {} #{condition : [sample1, sample2, ...]}
+	samps['conditionA'] = []
+	samps['conditionB'] = []
+	with open(sampconds, 'r') as infh:
+		for line in infh:
+			line = line.strip().split('\t')
+			if line[0] == 'sample':
+				continue
+			if line[1] == conditionA:
+				samps['conditionA'].append(os.path.basename(line[0]))
+			elif line[1] == conditionB:
+				samps['conditionB'].append(os.path.basename(line[0]))
+
+	for index, row in countdf.iterrows():
+		utr = index.split('_')[0]
+		nt = int(index.split('_')[1])
+		if utr not in log2fcdict:
+			log2fcdict[utr] = {}
+
+		conditionAcounts = []
+		conditionBcounts = []
+		for sample in samps['conditionA']:
+			counts = row[sample]
+			conditionAcounts.append(counts)
+		for sample in samps['conditionB']:
+			counts = row[sample]
+			conditionBcounts.append(counts)
+
+		conditionAmeancounts = np.mean(conditionAcounts)
+		conditionBmeancounts = np.mean(conditionBcounts)
+
+		pc = 1 #pseudocount
+		log2fc = log2((conditionBmeancounts + pc) / (conditionAmeancounts + pc))
+
+		log2fcdict[utr][nt] = round(log2fc, 3)
+
+	#turn this into a df, one per utr
+	utrdfs = []
+	for utr in log2fcdict:
+		df = pd.DataFrame.from_dict([log2fcdict[utr]], orient = 'columns')
+		cnames = list(df.columns.values)
+		cnames = [utr + '_' + str(c) for c in cnames]
+		df.columns = cnames
+		df = df.transpose()
+		df.columns = ['log2FC']
+		utrdfs.append(df)
+
+	#Bring together all utrdfs
+	allutrdfs = pd.concat(utrdfs, axis = 0)
+	allutrdfs.columns = ['log2FC']
+
+	return allutrdfs
+
+
+def getpvalues_MADstat(countdf, sampconds, conditionA, conditionB):
+	#For each nt, calculate a stat (difference between medians / median absolute deviation)
+	#median absolute deviation is the absolute median of deviations from the median
+
+	#Uses log2-transformed values
+
+	#shuffle sample labels, calculate stat again
+	#repeat shuffle 1000 times
+	#calculate empirical p value
+
+	#alternatively, maybe use a LME model?
+
+	#in countdf, indicies (rownames) are utr_nt and columns are samples
+
+	samps = {} #{condition : [sample1, sample2, ...]}
+	samps['conditionA'] = []
+	samps['conditionB'] = []
+	with open(sampconds, 'r') as infh:
+		for line in infh:
+			line = line.strip().split('\t')
+			if line[0] == 'sample':
+				continue
+			if line[1] == conditionA:
+				samps['conditionA'].append(os.path.basename(line[0]))
+			elif line[1] == conditionB:
+				samps['conditionB'].append(os.path.basename(line[0]))
+
+	pvaluedict = OrderedDict() #{utr_nt : p}
+	condameandict = {} #{utr_nt : condAmean}
+	condbmeandict = {} #{utr_nt : condAmean}
+	condaMADdict = {} #{utr_nt : condAmad}
+	condbMADdict = {} #{utr_nt : condBmad}
+	currentutr = ''
+	for index, row in countdf.iterrows():
+		utr = index.split('_')[0]
+		if utr != currentutr:
+			print('Calculating pvalues for {0}...'.format(utr))
+			currentutr = utr
+		if utr != 'Gdf11':
+			continue
+
+		conditionAvalues = countdf.loc[index, samps['conditionA']].tolist()
+		conditionBvalues = countdf.loc[index, samps['conditionB']].tolist()
+
+		#log2transform
+		pc = 0.01
+		conditionAvalues = [log2(v + pc) for v in conditionAvalues]
+		conditionBvalues = [log2(v + pc) for v in conditionBvalues]
+
+		condAmean = np.mean(conditionAvalues)
+		condBmean = np.mean(conditionBvalues)
+
+		#by default, statsmodels.robust.scale.mad scales the MAD by dividing it by 0.674
+		#which gives you approximately the standard deviation. Override by supplying c = 1
+
+		condAmad = MAD(conditionAvalues, c = 1)
+		condBmad = MAD(conditionBvalues, c = 1)
+
+		a = (condAmad**2) / len(conditionAvalues)
+		b = (condBmad**2) / len(conditionBvalues)
+		bottom = (a + b)**0.5
+		top = condBmean - condAmean
+		stat = top / bottom
+
+		allvalues = conditionAvalues + conditionBvalues
+		nullstats = []
+		for i in range(100):
+			#shuffle values
+			shuffle(allvalues)
+			shufflecondAvalues = allvalues[:len(conditionAvalues)] #first n are new condA
+			shufflecondBvalues = allvalues[len(conditionAvalues):] #everything else is condB
+
+			shufflecondAmean = np.mean(shufflecondAvalues)
+			shufflecondBmean = np.mean(shufflecondBvalues)
+			
+			shufflecondAmad = MAD(shufflecondAvalues, c = 1)
+			shufflecondBmad = MAD(shufflecondBvalues, c = 1)
+
+			a = (shufflecondAmad**2) / len(shufflecondAvalues)
+			b = (shufflecondBmad**2) / len(shufflecondBvalues)
+			bottom = (a + b)**0.5
+			top = shufflecondBmean - shufflecondAmean
+			nullstat = top / bottom
+			nullstats.append(nullstat)
+
+		
+		percentile = percentileofscore(nullstats, stat)
+		#two tailed
+		if percentile >= 50:
+			p = (1 - (percentile / 100)) * 2
+		elif percentile < 50:
+			p = (percentile / 100) * 2
+		pvaluedict[index] = p
+		condameandict[index] = condAmean
+		condbmeandict[index] = condBmean
+		condaMADdict[index] = condAmad
+		condbMADdict[index] = condBmad
+
+	#correct p values using BH
+	positions = list(pvaluedict.keys())
+	pvalues = list(pvaluedict.values())
+	correctedpvalues = multipletests(pvalues, method = 'fdr_bh')[1]
+	correctedpvalues = [float('{:.2e}'.format(fdr)) for fdr in correctedpvalues]
+	correctedpvaluedict = dict(zip(positions, correctedpvalues))
+
+	#turn into df
+	pdf = pd.DataFrame.from_dict(correctedpvaluedict, orient = 'index')
+	pdf.columns = ['FDR']
+
+	condameandf = pd.DataFrame.from_dict(condameandict, orient = 'index')
+	condameandf.columns = ['{0}_mean'.format(conditionA)]
+
+	condbmeandf = pd.DataFrame.from_dict(condbmeandict, orient = 'index')
+	condbmeandf.columns = ['{0}_mean'.format(conditionB)]
+
+	condamaddf = pd.DataFrame.from_dict(condaMADdict, orient = 'index')
+	condamaddf.columns = ['{0}_MAD'.format(conditionA)]
+
+	condbmaddf = pd.DataFrame.from_dict(condbMADdict, orient = 'index')
+	condbmaddf.columns = ['{0}_MAD'.format(conditionB)]
+
+	bigdf = pd.concat([pdf, condameandf, condbmeandf, condamaddf, condbmaddf], axis = 1, join = 'inner')
+	
+	return bigdf
+	
+
+
 
 
 
@@ -298,7 +497,9 @@ def smoothcounts(ntdf, windowsize):
 
 #To define "regions":
 #start at sig nt, allow max gap of <gap> nonsig nt
-umidf = collatereplicates(sys.argv[1])
+
+'''
+umidf = collatereplicates(sys.argv[1], sys.argv[2], sys.argv[3])
 umidf_qn = normalizecounts(umidf)
 umidf.to_csv(path_or_buf = 'bigdf.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
 umidf_qn.to_csv(path_or_buf = 'bigdf_qn.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
@@ -306,11 +507,11 @@ ntdf = getntcoverage(umidf_qn, 4, 260)
 ntdf.to_csv(path_or_buf = 'bigdf_qn_nt.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
 smoothntdf = smoothcounts(ntdf, 11)
 smoothntdf.to_csv(path_or_buf = 'bigdf_qn_nt_smooth.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
+'''
 
-'''
-reorder steps
-1. get umi counts
-2. quantile normalize
-3. get nuc counts
-4. optionally, smooth
-'''
+countdf = pd.read_csv('bigdf_qn_nt_smooth.txt', sep = '\t', index_col = 'position', header = 0)
+log2fcdf = getlog2fc(countdf, sys.argv[1], sys.argv[2], sys.argv[3])
+pvaldf = getpvalues_MADstat(countdf, sys.argv[1], sys.argv[2], sys.argv[3])
+
+log2fc_and_pvaldf = pd.merge(log2fcdf, pvaldf, left_index = True, right_index = True)
+log2fc_and_pvaldf.to_csv(path_or_buf = 'log2fc_and_pvaldf.txt', sep = '\t', header = True, index = True, index_label = 'position')
