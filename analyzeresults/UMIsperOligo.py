@@ -130,23 +130,39 @@ def runsubsamples(sam, fastq, samplename):
 #sam, fastq, outfilename
 #runsubsamples(sys.argv[1], sys.argv[2], sys.argv[3])
 
-samples = ['TWIST_HUMAN_POOL_S14_L003', 'CAF_FF_INTEGRANT_S13_L003']
-samplenames = ['hg38OligoPool', 'hg38Integrants']
+samples = ['CAD_Neurite_FF_1_S13', 'CAD_Neurite_FF_2_S14', 'CAD_Neurite_FF_3_S15', 'CAD_Neurite_FF_4_S16',
+'CAD_Soma_FF_1_S9', 'CAD_Soma_FF_2_S10', 'CAD_Soma_FF_3_S11', 'CAD_Soma_FF_4_S12',
+'CAD_Neurite_GFP_1_S29', 'CAD_Neurite_GFP_2_S30', 'CAD_Neurite_GFP_3_S31', 'CAD_Neurite_GFP_4_S32',
+'CAD_Soma_GFP_1_S25', 'CAD_Soma_GFP_2_S26', 'CAD_Soma_GFP_3_S27', 'CAD_Soma_GFP_4_S28',
+'N2A_Neurite_FF_1_S5', 'N2A_Neurite_FF_2_S6', 'N2A_Neurite_FF_3_S7', 'N2A_Neurite_FF_4_S8',
+'N2A_Soma_FF_1_S1', 'N2A_Soma_FF_2_S2', 'N2A_Soma_FF_3_S3', 'N2A_Soma_FF_4_S4',
+'N2A_Neurite_GFP_1_S21', 'N2A_Neurite_GFP_2_S22', 'N2A_Neurite_GFP_3_S23', 'N2A_Neurite_GFP_4_S24',
+'N2A_Soma_GFP_1_S17', 'N2A_Soma_GFP_2_S18', 'N2A_Soma_GFP_3_S19', 'N2A_Soma_GFP_4_S20']
 
-readdir = '/beevol/home/taliaferro/data/cisElementScreen/human/IntegrationTest/RawReads/'
-samdir = '/beevol/home/taliaferro/data/cisElementScreen/human/IntegrationTest/Mapping/'
+samplenames = ['CAD_Neurite_FF_Rep1', 'CAD_Neurite_FF_Rep2', 'CAD_Neurite_FF_Rep3', 'CAD_Neurite_FF_Rep4',
+'CAD_Soma_FF_Rep1', 'CAD_Soma_FF_Rep2', 'CAD_Soma_FF_Rep3', 'CAD_Soma_FF_Rep4',
+'CAD_Neurite_GFP_Rep1', 'CAD_Neurite_GFP_Rep2', 'CAD_Neurite_GFP_Rep3', 'CAD_Neurite_GFP_Rep4',
+'CAD_Soma_GFP_Rep1', 'CAD_Soma_GFP_Rep2', 'CAD_Soma_GFP_Rep3', 'CAD_Soma_GFP_Rep4',
+'N2A_Neurite_FF_Rep1', 'N2A_Neurite_FF_Rep2', 'N2A_Neurite_FF_Rep3', 'N2A_Neurite_FF_Rep4',
+'N2A_Soma_FF_Rep1', 'N2A_Soma_FF_Rep2', 'N2A_Soma_FF_Rep3', 'N2A_Soma_FF_Rep4',
+'N2A_Neurite_GFP_Rep1', 'N2A_Neurite_GFP_Rep2', 'N2A_Neurite_GFP_Rep3', 'N2A_Neurite_GFP_Rep4',
+'N2A_Soma_GFP_Rep1', 'N2A_Soma_GFP_Rep2', 'N2A_Soma_GFP_Rep3', 'N2A_Soma_GFP_Rep4']
+
+readdir = '/beevol/home/taliaferro/data/cisElementScreen/FocusedScreen/FractionationSequencing/RawReads'
+samdir = '/beevol/home/taliaferro/data/cisElementScreen/FocusedScreen/FractionationSequencing/Alignments'
 
 '''
 #Subsampling reads
 for idx, sample in enumerate(samples):
-	revreads = os.path.join(readdir, sample + '_R2_001.fastq.gz')
+	revreads = os.path.join(readdir, sample + '_L002_R2_001.fastq.gz')
 	samplename = samplenames[idx]
 	samfile = os.path.join(samdir, samplename + '.sam')
 	print('Analyzing {0}, sample {1} of {2}...'.format(samplename, idx + 1, len(samplenames)))
 
 	runsubsamples(samfile, revreads, samplename)
-'''
 
+
+'''
 #All reads
 for idx, sample in enumerate(samples):
 	revreads = os.path.join(readdir, sample + '_L004_R2_001.fastq.gz')
@@ -160,4 +176,6 @@ for idx, sample in enumerate(samples):
 	umis = fastq2UMI(revreads)
 	print('Connecting oligo counts and UMIs...')
 	umisperoligo(oligo2reads, umis, samplename)
+
+
 
