@@ -10,6 +10,7 @@
 #python3
 import sys
 import os
+import gffutils
 import numpy as np
 from math import log2
 import pandas as pd
@@ -25,81 +26,75 @@ from scipy.stats.distributions import chi2
 import warnings
 import time
 
-def getntcoverage(umicounts, stepsize, oligosize, smoothcoverage):
-	#Here we are going to get nt-level coverage. Oligo names are of the form
-	#ENSMUSG00000025352.256|Gdf11
-	#This tells you which UTR it belongs to (Gdf11) and where it is 
-	#(it's number 256 in the UTR, counting 5' to 3')
-	#If we know the step size, we can tell how far away this oligo is from the beginning
-	#of the UTR. Further, if we know the oligo size, we know the nts it is covering.
-	ntcoverage = {} #{utr : {nt : [normalized counts of oligos that cover that nt]}}  nt is 0-based
-	medianntcoverage = {} #{utr : {nt : [median normalized counts of oligos that cover this nt]}}
-	stepsize = int(stepsize)
-	oligosize = int(oligosize)
+#go from nt number to genome coord, need {oligo : [list of exonic coordinates covered by oligos]}
+#from that, make dictionary of {oligo : {utr nt(as defined by getntcoverage) : genome coord}}
 
-	#Get total number of unique UMIs for depth normalization purposes
-	with open(umicounts, 'r') as infh:
-		counts = []
-		for line in infh:
-			uniqueumis = int(line.split('\t')[2])
-			counts.append(uniqueumis)
+def oligos2genome(gff):
+	#We need some way to relate oligo positions, namely through their ID's (e.g. ENSMUSG00000025352.256|Gdf11)
+	#to positions in the genome that they cover. One way to do this would be to, for each oligo,
+	#make a list of coordinates that are tiled by the oligo: {utr : [list of exonic coordinates covered by utr's oligos]}
+	#then, from that, make dictionary of {utr : {utr nt (as defined by getntcoverage (this goes from 1 to len(utr))) : genome coord}}
 
-		totalcounts = sum(counts) / 1e6
+	#Gffs are annotations of oligo positions and were made by OligoPools_shortstep_260nt.py
 
+	utrcoords = {} #{utr : [list of exonic coordinates covered by utr's oligos]}
 
-	with open(umicounts, 'r') as infh:
-		for line in infh:
-			line = line.strip().split('\t')
-			utr = line[0].split('|')[1]
-			if utr not in ntcoverage:
-				ntcoverage[utr] = {}
-			oligopos = int(line[0].split('.')[1].split('|')[0]) #this is 1-based
-			oligostart = (oligopos - 1) * stepsize
-			ntscovered = list(range(oligostart, oligostart + oligosize + 1))
-			umicount = int(line[2])
-			#normalizedumicount = umicount / totalcounts
-			for nt in ntscovered:
-				if nt not in ntcoverage[utr]:
-					ntcoverage[utr][nt] = [umicount]
-				else:
-					ntcoverage[utr][nt].append(umicount)
+	print('Indexing gff...')
+	gff_fn = gff
+	db_fn = os.path.abspath(gff_fn) + '.db'
+	if os.path.isfile(db_fn) == False:
+		gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
 
-	for utr in ntcoverage:
-		medianntcoverage[utr] = {}
-		for nt in ntcoverage[utr]:
-			mediancov = round(np.median(ntcoverage[utr][nt]), 3)
-			medianntcoverage[utr][nt] = mediancov
+	db = gffutils.FeatureDB(db_fn)
+	print('Done indexing!')
+
+	utrs = db.features_of_type('UTR')
+
+	for utr in utrs:
+		utrid = str(utr.attributes['gene_name'][0])
+		utrexoniccoords = []
+		for oligo in db.children(utr, featuretype = 'oligo', level = 1):
+			#Does this oligo cross a splice junction (i.e. does it have junctionpiece children?)
+			if len(list(db.children(oligo, featuretype = 'junctionpiece'))) > 0:
+				#yes there is a junctionpiece
+				for jp in db.children(oligo, featuretype = 'junctionpiece'):
+					jpnt = list(range(jp.start, jp.end + 1))
+					utrexoniccoords += jpnt
+			elif len(list(db.children(oligo, featuretype = 'junctionpiece'))) == 0:
+				#no there is not a junctionpiece
+				oligont = list(range(oligo.start, oligo.end + 1))
+				utrexoniccoords += oligont
+
+		#there's gonna be a lot of redundancy in utrexoniccoords because the oligos overlap
+		utrexoniccoords = list(set(utrexoniccoords))
+		if utr.strand == '+':
+			utrexoniccoords = list(sorted(utrexoniccoords))
+		elif utr.strand == '-':
+			utrexoniccoords = list(reversed(sorted(utrexoniccoords)))
+
+		utrcoords[utrid] = utrexoniccoords
+
+	#OK now we need to go from utrcoords to utr_oligocoords {utr : {utr nt (as defined by getntcoverage (this goes from 1 to len(utr))) : genome coord}}
+
+	utr_oligocoords = {} #{utr : {utr nt (as defined by getntcoverage (this goes from 1 to len(utr))) : genome coord}}
+	for utr in utrcoords:
+		if utr != 'Gdf11':
+			continue
+		genomecoords = utrcoords[utr]
+		oligocoords = list(range(len(genomecoords) + 1))
+		oligocoords2genomecoords = dict(zip(oligocoords, genomecoords))
+		utr_oligocoords[utr] = oligocoords2genomecoords
 
 	
-	if smoothcoverage == False:
-		return medianntcoverage
-	elif smoothcoverage == True:
-		#mean of window centered on nt
-		smoothntcoverage = {} #{utr : {nt : smoothedcoverage}}
-		windowsize = 11 #nt plus 5 nt on either side
+	#turn utr_oligocoords into a df and return the df
+	df = pd.concat({k: pd.DataFrame.from_dict(v, 'index') for k, v in utr_oligocoords.items()}, axis = 0)
+	#get indexes out as column names
+	df.reset_index(level = 1, inplace = True)
+	df.reset_index(level = 0, inplace = True)
+	df.columns = ['Gene', 'utrcoord', 'genomecoord']
 
-		for utr in medianntcoverage:
-			smoothntcoverage[utr] = {}
-			maxpos = max(list(medianntcoverage[utr].keys()))
-			for i in range(maxpos):
-				if i < 5 or i > maxpos - 5: #window will be too small
-					try:
-						smoothntcoverage[utr][i] = medianntcoverage[utr][i]
-					except KeyError:
-						pass
-				else:
-					window = range(i - int(((windowsize - 1) / 2)), i + int(((windowsize + 1) / 2)))
-					windowmedians = []
-					for j in window:
-						try:
-							windowmedians.append(medianntcoverage[utr][j])
-						except KeyError:
-							pass
-					smoothvalue = np.mean(windowmedians)
-					smoothntcoverage[utr][i] = round(smoothvalue, 3)
+	return df
 
-
-		return smoothntcoverage
 
 def collatereplicates(sampconds, conditionA, conditionB):
 	#Given a file that tells how replicates are arranged, collate a 
@@ -181,6 +176,8 @@ def getntcoverage(countdf, stepsize, oligosize):
 
 	#At the end of this, we want a df that has the median number of (normalized) oligo
 	#counts across all oligos that cover a nt
+
+	#Don't use smoothing here, 
 
 	countdfindicies = list(countdf.index.values) #utr_oligonumber
 	countdfcolnames = list(countdf.columns.values) #sample name
@@ -501,6 +498,8 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 	condbmeans = []
 	condamads = []
 	condbmads = []
+	condasds = []
+	condbsds = []
 	
 	sampconddf = pd.read_csv(sampconds, sep = '\t', index_col = False, header = 0)
 	colnames = list(sampconddf.columns)
@@ -522,7 +521,6 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 	for index, row in countdf.iterrows():
 		utr = index.split('_')[0]
 		nt = int(index.split('_')[1])
-		print(nt)
 		if utr != 'Gdf11':
 			continue
 		if utr != currentutr:
@@ -561,11 +559,15 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 		condbmean = np.mean(condbvalues)
 		condamad = MAD(condavalues, c = 1)
 		condbmad = MAD(condbvalues, c = 1)
+		condasd = np.std(condavalues)
+		condbsd = np.std(condbvalues)
 
 		condameans.append(condamean)
 		condbmeans.append(condbmean)
 		condamads.append(condamad)
 		condbmads.append(condbmad)
+		condasds.append(condasd)
+		condbsds.append(condbsd)
 
 		#If there is an NA count value, we are not going to calculate a pvalue for this gene
 		p = None
@@ -674,33 +676,65 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 	pdf = pdf.assign(condbmean = condbmeans)
 	pdf = pdf.assign(condamad = condamads)
 	pdf = pdf.assign(condbmad = condbmads)
+	pdf = pdf.assign(condasd = condasds)
+	pdf = pdf.assign(condbsd = condbsds)
 
 	#rename columns
-	pdf.columns = ['FDR', '{0}_mean'.format(conditionA), '{0}_mean'.format(conditionB), '{0}_MAD'.format(conditionA), '{0}_MAD'.format(conditionB)]
+	pdf.columns = ['FDR', '{0}_mean'.format(conditionA), '{0}_mean'.format(conditionB), '{0}_MAD'.format(conditionA), '{0}_MAD'.format(conditionB), '{0}_sd'.format(conditionA), '{0}_sd'.format(conditionB)]
 
 	return pdf
 
 
 #TODO
-#add covariates to LME
 #To define "regions":
 #start at sig nt, allow max gap of <gap> nonsig nt
 
-'''
+#SD of log2FC
+
+
+#Get relationship of oligo coordinates to genome coordinates
+oligo2genomedf = oligos2genome(sys.argv[4])
+
+#Get df of umi counts
 umidf = collatereplicates(sys.argv[1], sys.argv[2], sys.argv[3])
+
+#Quantile normalize counts
 umidf_qn = normalizecounts(umidf)
-umidf.to_csv(path_or_buf = 'bigdf.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
-umidf_qn.to_csv(path_or_buf = 'bigdf_qn.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
+umidf.to_csv(path_or_buf = 'umicounts.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
+umidf_qn.to_csv(path_or_buf = 'umicounts_qn.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
+
+#Get nt level coverage as the median count across oligos that cover each nt
 ntdf = getntcoverage(umidf_qn, 4, 260)
-ntdf.to_csv(path_or_buf = 'bigdf_qn_nt.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
+ntdf.to_csv(path_or_buf = 'umicounts_qn_nt.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
+
+#Smooth coverage with 11 nt window (5 nt +/- center of window)
 smoothntdf = smoothcounts(ntdf, 11)
-smoothntdf.to_csv(path_or_buf = 'bigdf_qn_nt_smooth.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
-'''
+smoothntdf.to_csv(path_or_buf = 'umicounts_qn_nt_smooth.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
 
-countdf = pd.read_csv('bigdf_qn_nt_smooth.txt', sep = '\t', index_col = 'position', header = 0)
-log2fcdf = getlog2fc(countdf, sys.argv[1], sys.argv[2], sys.argv[3])
-#pvaldf = getpvalues_MADstat(countdf, sys.argv[1], sys.argv[2], sys.argv[3])
-pvaldf = getpvalues_LME(countdf, sys.argv[1], sys.argv[2], sys.argv[3])
+smoothntdf = pd.read_csv('umicounts_qn_nt_smooth.txt', sep = '\t', header = 0, index_col = 'position')
+#Calculate mean counts across replicates and log2FC across conditions
+log2fcdf = getlog2fc(smoothntdf, sys.argv[1], sys.argv[2], sys.argv[3])
 
+#Calculate p values at each nt using either MAD or LME
+#pvaldf = getpvalues_MADstat(smoothntdf, sys.argv[1], sys.argv[2], sys.argv[3])
+pvaldf = getpvalues_LME(smoothntdf, sys.argv[1], sys.argv[2], sys.argv[3])
+
+#Merge log2FC df and pvalue df on position (utr_nt)
 log2fc_and_pvaldf = pd.merge(log2fcdf, pvaldf, left_index = True, right_index = True)
-log2fc_and_pvaldf.to_csv(path_or_buf = 'log2fc_and_pvaldf.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3g')
+log2fc_and_pvaldf['position'] = log2fc_and_pvaldf.index
+
+#Split position column into 'Gene' and 'utrpos'
+s = log2fc_and_pvaldf['position'].str.split('_', n = 1)
+log2fc_and_pvaldf['Gene'], log2fc_and_pvaldf['utrcoord'] = s.str[0], s.str[1]
+cols = log2fc_and_pvaldf.columns.tolist()
+colnames = [cols[-2], cols[-1]]
+colnames += cols[0:9]
+log2fc_and_pvaldf = log2fc_and_pvaldf[colnames]
+#Set utrcoord to int64 (was object)
+log2fc_and_pvaldf['utrcoord'] = log2fc_and_pvaldf.utrcoord.astype(int)
+log2fc_and_pvaldf = log2fc_and_pvaldf.drop(['position'], axis = 1)
+
+#Merge genomecoord df and log2fc_and_pvaldf
+newdf = pd.merge(oligo2genomedf, log2fc_and_pvaldf, how = 'inner', on = ['Gene', 'utrcoord'])
+print(newdf.head())
+newdf.to_csv(path_or_buf = 'mpraresults.txt', sep = '\t', header = True, index = False, float_format = '%.3g')
