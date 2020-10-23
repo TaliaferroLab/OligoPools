@@ -1,3 +1,11 @@
+#This if the first approach to getting nucleotide level data.
+#Doesnt work great.  Log2fc values are squahsed compared to DESeq2
+#umicounts_qn are different than DESeq2 normcounts
+#Perhaps replace umicounts_qn with DESeq2 normcounts?
+
+#DEseq normalizes using median of ratios, this script normalizes using quantile normalization
+
+
 #Our MPRA has UMIs. UMIsperoligo takes a sam file of alignments, the fastq
 #file containing the UMIs (on the reverse read) and gives a table of the following format:
 #  oligo ID      number_of_reads     number_of_unique_UMIs
@@ -7,12 +15,15 @@
 #be assigned one count. Then the idea is to compare depth-normalized counts for each nucleotide 
 #across conditions.
 
+#usage: python analyzeMPRA.py <sampcondsfile> <condA> <condB> <oligo gff>
+
 #python3
 import sys
 import os
 import gffutils
 import numpy as np
 from math import log2
+from math import sqrt
 import pandas as pd
 import numpy as np
 from collections import OrderedDict
@@ -78,8 +89,6 @@ def oligos2genome(gff):
 
 	utr_oligocoords = {} #{utr : {utr nt (as defined by getntcoverage (this goes from 1 to len(utr))) : genome coord}}
 	for utr in utrcoords:
-		if utr != 'Gdf11':
-			continue
 		genomecoords = utrcoords[utr]
 		oligocoords = list(range(len(genomecoords) + 1))
 		oligocoords2genomecoords = dict(zip(oligocoords, genomecoords))
@@ -328,18 +337,18 @@ def getlog2fc(countdf, sampconds, conditionA, conditionB):
 
 		conditionAcounts = []
 		conditionBcounts = []
+		pc = 1 #pseudocount
 		for sample in samps['conditionA']:
-			counts = row[sample]
+			counts = row[sample] + pc
 			conditionAcounts.append(counts)
 		for sample in samps['conditionB']:
-			counts = row[sample]
+			counts = row[sample] + pc
 			conditionBcounts.append(counts)
 
 		conditionAmeancounts = np.mean(conditionAcounts)
 		conditionBmeancounts = np.mean(conditionBcounts)
 
-		pc = 1 #pseudocount
-		log2fc = log2((conditionBmeancounts + pc) / (conditionAmeancounts + pc))
+		log2fc = log2(conditionBmeancounts / conditionAmeancounts)
 
 		log2fcdict[utr][nt] = round(log2fc, 3)
 
@@ -399,8 +408,6 @@ def getpvalues_MADstat(countdf, sampconds, conditionA, conditionB):
 		if utr != currentutr:
 			print('Calculating pvalues for {0}...'.format(utr))
 			currentutr = utr
-		if utr != 'Gdf11':
-			continue
 
 		conditionAvalues = countdf.loc[index, samps['conditionA']].tolist()
 		conditionBvalues = countdf.loc[index, samps['conditionB']].tolist()
@@ -500,6 +507,7 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 	condbmads = []
 	condasds = []
 	condbsds = []
+	log2fcsds = []
 	
 	sampconddf = pd.read_csv(sampconds, sep = '\t', index_col = False, header = 0)
 	colnames = list(sampconddf.columns)
@@ -521,8 +529,6 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 	for index, row in countdf.iterrows():
 		utr = index.split('_')[0]
 		nt = int(index.split('_')[1])
-		if utr != 'Gdf11':
-			continue
 		if utr != currentutr:
 			print('Calculating pvalue for {0}...'.format(utr))
 			currentutr = utr
@@ -538,7 +544,7 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 				values.append(value)
 
 		#log2transform
-		pc = 0.01
+		pc = 1
 		values = [log2(v + pc) for v in values]
 
 		d['value'] = values
@@ -561,6 +567,7 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 		condbmad = MAD(condbvalues, c = 1)
 		condasd = np.std(condavalues)
 		condbsd = np.std(condbvalues)
+		log2fcsd = sqrt((condasd**2 / len(condavalues)) + (condbsd**2 / len(condbvalues)))
 
 		condameans.append(condamean)
 		condbmeans.append(condbmean)
@@ -568,6 +575,7 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 		condbmads.append(condbmad)
 		condasds.append(condasd)
 		condbsds.append(condbsd)
+		log2fcsds.append(log2fcsd)
 
 		#If there is an NA count value, we are not going to calculate a pvalue for this gene
 		p = None
@@ -678,9 +686,10 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 	pdf = pdf.assign(condbmad = condbmads)
 	pdf = pdf.assign(condasd = condasds)
 	pdf = pdf.assign(condbsd = condbsds)
+	pdf = pdf.assign(log2fcsd = log2fcsds)
 
 	#rename columns
-	pdf.columns = ['FDR', '{0}_mean'.format(conditionA), '{0}_mean'.format(conditionB), '{0}_MAD'.format(conditionA), '{0}_MAD'.format(conditionB), '{0}_sd'.format(conditionA), '{0}_sd'.format(conditionB)]
+	pdf.columns = ['FDR', '{0}_mean'.format(conditionA), '{0}_mean'.format(conditionB), '{0}_MAD'.format(conditionA), '{0}_MAD'.format(conditionB), '{0}_sd'.format(conditionA), '{0}_sd'.format(conditionB), 'log2FCsd']
 
 	return pdf
 
@@ -688,8 +697,23 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 #TODO
 #To define "regions":
 #start at sig nt, allow max gap of <gap> nonsig nt
+#compare qn counts to deseq normcounts
 
-#SD of log2FC
+#Alternatively
+#define sig region based on DEseq sig calls
+#Start at sig oligo
+#Are 4 out of next 5 (changeable) sig?
+#If yes, extend window to next oligo, repeat
+#If no, end window
+#Sig nts would be ones that are in common across every oligo in the window
+
+#Alternatively
+#nt log2FC (DEseq defined) is median oligo log2FC across all oligos that cover the nt
+#for pvalue, go across all log2FC, 50% chance to change sign, recalculate median
+#repeat 1000 times, empirical pvalue for real median in random median distribution
+
+#Alternatively    <--- try this first
+#Drop in DESeq2 normcounts as replacement for umicounts_qn.txt
 
 
 #Get relationship of oligo coordinates to genome coordinates
@@ -728,7 +752,7 @@ s = log2fc_and_pvaldf['position'].str.split('_', n = 1)
 log2fc_and_pvaldf['Gene'], log2fc_and_pvaldf['utrcoord'] = s.str[0], s.str[1]
 cols = log2fc_and_pvaldf.columns.tolist()
 colnames = [cols[-2], cols[-1]]
-colnames += cols[0:9]
+colnames += cols[0:10]
 log2fc_and_pvaldf = log2fc_and_pvaldf[colnames]
 #Set utrcoord to int64 (was object)
 log2fc_and_pvaldf['utrcoord'] = log2fc_and_pvaldf.utrcoord.astype(int)
@@ -737,4 +761,4 @@ log2fc_and_pvaldf = log2fc_and_pvaldf.drop(['position'], axis = 1)
 #Merge genomecoord df and log2fc_and_pvaldf
 newdf = pd.merge(oligo2genomedf, log2fc_and_pvaldf, how = 'inner', on = ['Gene', 'utrcoord'])
 print(newdf.head())
-newdf.to_csv(path_or_buf = 'mpraresults.txt', sep = '\t', header = True, index = False, float_format = '%.3g')
+newdf.to_csv(path_or_buf = 'mpraresults.txt', sep = '\t', header = True, index = False, float_format = '%.3g', na_rep = 'NA')
