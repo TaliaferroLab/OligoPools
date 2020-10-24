@@ -34,6 +34,7 @@ from statsmodels.stats.multitest import multipletests
 from random import shuffle
 from scipy.stats import percentileofscore
 from scipy.stats.distributions import chi2
+from scipy.stats.mstats import gmean
 import warnings
 import time
 
@@ -158,6 +159,45 @@ def collatereplicates(sampconds, conditionA, conditionB):
 	bigdf = bigdf.fillna(value = 0.0)
 
 	return bigdf
+
+def normalizecounts_mor(countdf):
+	print('Normalizing using median of ratios...')
+	#Given a dataframe of umi counts per sample, normalize using median of ratios
+	#This is the same method used by DESeq2
+
+	#Compute geometric mean across columns
+	gmeans = []
+	for ind, row in countdf.iterrows():
+		counts = row.tolist()
+		#Get rid of any zeros
+		#This is similar to the 'poscounts' estimator of the geometric mean that can be employed with DESeq2
+		counts = [count for count in counts if count != 0]
+		if len(counts) == 0: #if all samples were 0
+			geometricmean = 1
+		elif len(counts) > 0:
+			geometricmean = gmean(counts)
+		gmeans.append(geometricmean)
+	
+	#Calculate size factors for each sample (median ratio of counts to geometric mean across all oligos)
+	sizefactors = {} #{sample : sizefactors}
+
+	samples = list(countdf)
+	for sample in samples:
+		ratios = []
+		samplecounts = countdf[sample].tolist()
+		for idx, samplecount in enumerate(samplecounts):
+			geometricmean = gmeans[idx]
+			ratio = samplecount / geometricmean
+			ratios.append(ratio)
+		medianratio = np.median(ratios)
+		print('Size factor for {0} = {1}'.format(sample, round(medianratio, 5))
+		sizefactors[sample] = medianratio
+
+	#Divide the counts for each sample by its size factor
+	countdf_mor = countdf.divide(list(sizefactors.values()), axis = 'columns')
+
+	return countdf_mor
+
 
 
 def normalizecounts(countdf):
@@ -714,6 +754,8 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 
 #Alternatively    <--- try this first
 #Drop in DESeq2 normcounts as replacement for umicounts_qn.txt
+#Didn't really work, although using median of ratios changed normalized oligo counts,
+#at the nt level, not much changed
 
 
 #Get relationship of oligo coordinates to genome coordinates
@@ -722,8 +764,11 @@ oligo2genomedf = oligos2genome(sys.argv[4])
 #Get df of umi counts
 umidf = collatereplicates(sys.argv[1], sys.argv[2], sys.argv[3])
 
-#Quantile normalize counts
-umidf_qn = normalizecounts(umidf)
+#Median of ratios normalization
+umidf_qn = normalizecounts_mor(umidf)
+
+#Quantile normalize counts (mutually exclusive with median of ratios normalization)
+#umidf_qn = normalizecounts(umidf)
 umidf.to_csv(path_or_buf = 'umicounts.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
 umidf_qn.to_csv(path_or_buf = 'umicounts_qn.txt', sep = '\t', header = True, index = True, index_label = 'position', float_format = '%.3f')
 
