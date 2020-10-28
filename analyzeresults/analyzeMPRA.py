@@ -739,7 +739,7 @@ def getpvalues_LME(countdf, sampconds, conditionA, conditionB):
 #start at sig nt, allow max gap of <gap> nonsig nt
 #compare qn counts to deseq normcounts
 
-#Alternatively
+#Alternatively  <--- try this next
 #define sig region based on DEseq sig calls
 #Start at sig oligo
 #Are 4 out of next 5 (changeable) sig?
