@@ -81,7 +81,7 @@ def oligos2genome(gff):
 	#get indexes out as column names
 	df.reset_index(level = 1, inplace = True)
 	df.reset_index(level = 0, inplace = True)
-	df.columns = ['Gene', 'utrcoord', 'genomecoord']
+	df.columns = ['genename', 'utrcoord', 'genomecoord']
 
 	return df
 
@@ -174,7 +174,6 @@ def definewindows(deseqtable, windowlengthminimum):
                                     doesthisgappass = False
 
                         except IndexError:
-                            print('yo')
                             inwindow = False
                             doesthisgappass = False
                             break
@@ -269,8 +268,9 @@ def definewindows(deseqtable, windowlengthminimum):
 
 
 oligocoorddf = oligos2genome(sys.argv[1])
-#print(oligocoorddf.head())
 enrichedwindows, df = definewindows(sys.argv[2], 10)
+#Join oligocoord and window dfs
+df = pd.merge(oligocoorddf, df, how = 'inner', on = ['genename', 'utrcoord'])
 df.to_csv(path_or_buf = os.path.abspath(sys.argv[2]) + '.sigoligowindows', sep = '\t', na_rep = 'NA', index = False, header = True)
 
 #TODO
