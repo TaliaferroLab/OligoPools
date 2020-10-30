@@ -297,7 +297,7 @@ def definewindows(deseqtable, windowlengthminimum):
     return enrichedwindows, allgenedfs
 
  
-def getminimalseqs(enrichedwindows, oligogff):
+def getminimalseqs(enrichedwindows, oligogff, cushion):
     #Given a set of oligo windows provided by definewindows(), get the minimal sequence
     #within those windows associated with localization. If windowmode == 'intersect', these will be defined as the sequence
     #in common to all oligos within the window. If windowmode == 'union', these will be defined as the sequence
@@ -378,12 +378,12 @@ def getminimalseqs(enrichedwindows, oligogff):
 
             #if this whole minimal element is contained within one exon
             if len(minimalelementwindows) == 1:
-                minimalseq = [chrm, 'mm10', 'minimalseq', str(minimalelementwindows[0][0]), str(minimalelementwindows[-1][1]), '.', strand, '.', 'ID={0}.minimalseq{1};gene_name={2};element_type={3}'.format(ensid, windowcounter, gene, 'singleexon')]
+                minimalseq = [chrm, 'mm10', 'minimalseq', str(minimalelementwindows[0][0] - cushion), str(minimalelementwindows[-1][1] + cushion), '.', strand, '.', 'ID={0}.minimalseq{1};gene_name={2};element_type={3}'.format(ensid, windowcounter, gene, 'singleexon')]
                 minimalseqs.append(minimalseq)
             #if it spans multiple exons
             elif len(minimalelementwindows) > 1:
                 minimalelementexoncounter = 0
-                wholewindow = [chrm, 'mm10', 'minimalseq', str(minimalelementwindows[0][0]), str(minimalelementwindows[-1][1]), '.', strand, '.', 'ID={0}.minimalseq{1};gene_name={2};element_type={3}'.format(ensid, windowcounter, gene, 'multiexon')]
+                wholewindow = [chrm, 'mm10', 'minimalseq', str(minimalelementwindows[0][0] - cushion), str(minimalelementwindows[-1][1] + cushion), '.', strand, '.', 'ID={0}.minimalseq{1};gene_name={2};element_type={3}'.format(ensid, windowcounter, gene, 'multiexon')]
                 minimalseqs.append(wholewindow)
                 for x in minimalelementwindows:
                     minimalelementexoncounter +=1
@@ -409,7 +409,7 @@ print(enrichedwindows)
 df.to_csv(path_or_buf = os.path.abspath(sys.argv[2]) + '.sigoligowindows', sep = '\t', na_rep = 'NA', index = False, header = True)
 
 #Define seqs of interest based on enriched windows
-minimalseqs, windowoligosgff = getminimalseqs(enrichedwindows, sys.argv[1])
+minimalseqs, windowoligosgff = getminimalseqs(enrichedwindows, sys.argv[1], 25)
 with open('minimalseqs.gff', 'w') as outfh:
     for minimalseq in minimalseqs:
         print(int(minimalseq[4]) - int(minimalseq[3]))
@@ -420,3 +420,12 @@ with open('windowoligos.gff', 'w') as outfh:
         outfh.write(('\t').join(windowoligo) + '\n')
 
 #TODO
+#remove CDS seqs from UTR seqs
+#generate minimal seq gff and non-minimal seq gff (but is still UTR)
+#generate random regions from non-minimal seq gff
+#NT content
+#dinucleotide content
+#MEME?
+#conservation
+#Rnafold
+#G4
