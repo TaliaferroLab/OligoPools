@@ -19,6 +19,45 @@ import gffutils
 from itertools import groupby
 from operator import itemgetter
 
+def simpleroligos2genome(gff):
+    #Just make a table that relates oligo position in the UTR (i.e. 1, 2, 3, 4, etc.)
+    #to the start genomecoord of the oligo
+
+    oligocoords = {} #{utr : {oligoposition : genomecoordofstart}}
+
+    print('Indexing gff...')
+    gff_fn = gff
+    db_fn = os.path.abspath(gff_fn) + '.db'
+    if os.path.isfile(db_fn) == False:
+        gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
+
+    db = gffutils.FeatureDB(db_fn)
+    print('Done indexing!')
+
+    utrs = db.features_of_type('UTR')
+
+    for utr in utrs:
+        utrid = str(utr.attributes['gene_name'][0])
+        if utrid not in oligocoords:
+            oligocoords[utrid] = {}
+        for oligo in db.children(utr, featuretype = 'oligo'):
+            oligoid = int(str(oligo.id).split('.')[1])
+            if oligo.strand == '+':
+                genomecoord = int(oligo.start)
+            elif oligo.strand == '-':
+                genomecoord = int(oligo.stop)
+            oligocoords[utrid][oligoid] = genomecoord
+            if utrid == 'Afap1l1' and oligoid == 1:
+                print('yo')
+
+    #turn into df
+    df = pd.concat({k: pd.DataFrame.from_dict(v, 'index') for k, v in oligocoords.items()}, axis = 0)
+    #get indexes out as column names
+    df.reset_index(level = 1, inplace = True)
+    df.reset_index(level = 0, inplace = True)
+    df.columns = ['genename', 'oligopos', 'genomecoord']
+
+    return df
 
 
 def oligos2genome(gff):
@@ -257,22 +296,127 @@ def definewindows(deseqtable, windowlengthminimum):
     
     return enrichedwindows, allgenedfs
 
-    
+ 
+def getminimalseqs(enrichedwindows, oligogff):
+    #Given a set of oligo windows provided by definewindows(), get the minimal sequence
+    #within those windows associated with localization. If windowmode == 'intersect', these will be defined as the sequence
+    #in common to all oligos within the window. If windowmode == 'union', these will be defined as the sequence
+    #in any oligo within the window
+
+    #enrichedwindows has the following structure:
+    #{genename : [(first oligo in window1, last oligo in window1), (first oligo in window2, last oligo in window2)]}
+    #In this dictionary, oligos are defined by their position within the UTR, starting with 1
+    #This designations correspond to the numbers after the ENS id and '.' in the oligo gff
+
+    minimalseqs = [] #[[chrm, 'mm10', 'minimalseq', start, stop, '.', strand, attributes]]
+    windowoligosgff = []
+
+    print('Indexing gff...')
+    gff_fn = oligogff
+    db_fn = os.path.abspath(gff_fn) + '.db'
+    if os.path.isfile(db_fn) == False:
+        gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
+
+    db = gffutils.FeatureDB(db_fn)
+    print('Done indexing!')
 
 
+    for gene in enrichedwindows:
+        windowcounter = 0
+        for window in enrichedwindows[gene]:
+            windowcounter +=1
+            coverednt = [] #[[all nt covered by oligo1], [all nt covered by oligo2], ...]
+            firstoligo = window[0]
+            lastoligo = window[1]
+            utrs = db.features_of_type('UTR')
+            for utr in utrs:
+                genename = utr.attributes['gene_name'][0]
+                if genename == gene:
+                    chrm = str(utr.chrom)
+                    strand = str(utr.strand)
+                    ensid = str(utr.id).split('.')[0]
+                    for oligo in db.children(utr, featuretype = 'oligo', level = 1):
+                        oligonumber = int(str(oligo.id).split('.')[1])
+                        #if this is one of the oligos we are after
+                        if oligonumber >= firstoligo and oligonumber <= lastoligo:
+                            #is this a oneexon oligo?
+                            if oligo.attributes['oligo_type'][0] == 'regular_oneexon':
+                                coverednt.append(list(range(oligo.start, oligo.end + 1)))
+                                windowoligosgff.append([str(oligo.chrom), 'sigWindowOligos', 'oligo', str(oligo.start), str(oligo.stop), '.', oligo.strand, '.', 'ID={0};gene_name={1};oligo_type={2}'.format(str(oligo.id), str(oligo.attributes['gene_name'][0]), 'regular_oneexon')])
+                            elif oligo.attributes['oligo_type'][0] == 'junction':
+                                thisoligosnt = []
+                                windowoligosgff.append([str(oligo.chrom), 'sigWindowOligos', 'oligo', str(oligo.start), str(oligo.stop), '.', oligo.strand, '.', 'ID={0};gene_name={1};oligo_type={2}'.format(str(oligo.id), str(oligo.attributes['gene_name'][0]), 'junction')])
+                                for junctionpiece in db.children(oligo, featuretype = 'junctionpiece'):
+                                    windowoligosgff.append([str(oligo.chrom), 'sigWindowOligos', 'junctionpiece', str(junctionpiece.start), str(junctionpiece.stop), '.', oligo.strand, '.', 'ID={0};gene_name={1};oligo_type={2};Parent={3}'.format(str(junctionpiece.id), str(junctionpiece.attributes['gene_name'][0]), 'junction', str(junctionpiece.attributes['Parent'][0]))])
+                                    junctionpiecent = list(range(junctionpiece.start, junctionpiece.end + 1))
+                                    thisoligosnt += junctionpiecent
+                                coverednt.append(thisoligosnt)
 
+            #now get the nt in the window
+            if gene == 'Cplx2':
+                windowmode = 'union'
+            else:
+                windowmode = 'intersect'
+            if windowmode == 'intersect':
+                commonnt = set(coverednt[0])
+                for x in coverednt[1:]:
+                    commonnt.intersection_update(x)
+                commonnt = sorted(list(commonnt))
+            elif windowmode == 'union':
+                setlist = [set(x) for x in coverednt]
+                unionnt = set().union(*setlist)
+                commonnt = sorted(list(unionnt))
 
+            #Does this minimal element span an intron?
+            #Turn this list of positions in a window into a list of tuples of windowstart/windowstop
+            #https://stackoverflow.com/questions/2154249/identify-groups-of-continuous-numbers-in-a-list
+            #length of minimalelementwindows is the number of exons contained in this minimal element
+            minimalelementwindows = [] #tuples of (windowstart, windowstop)
+            for k, g in groupby(enumerate(commonnt), lambda x:x[0] - x[1]):
+                group = list(map(itemgetter(1), g))
+                minimalelementwindows.append((group[0], group[-1]))
 
+            #if this whole minimal element is contained within one exon
+            if len(minimalelementwindows) == 1:
+                minimalseq = [chrm, 'mm10', 'minimalseq', str(minimalelementwindows[0][0]), str(minimalelementwindows[-1][1]), '.', strand, '.', 'ID={0}.minimalseq{1};gene_name={2};element_type={3}'.format(ensid, windowcounter, gene, 'singleexon')]
+                minimalseqs.append(minimalseq)
+            #if it spans multiple exons
+            elif len(minimalelementwindows) > 1:
+                minimalelementexoncounter = 0
+                wholewindow = [chrm, 'mm10', 'minimalseq', str(minimalelementwindows[0][0]), str(minimalelementwindows[-1][1]), '.', strand, '.', 'ID={0}.minimalseq{1};gene_name={2};element_type={3}'.format(ensid, windowcounter, gene, 'multiexon')]
+                minimalseqs.append(wholewindow)
+                for x in minimalelementwindows:
+                    minimalelementexoncounter +=1
+                    minimalseq = [chrm, 'mm10', 'minimalseqexon', str(x[0]), str(x[1]), '.', strand, '.', 'ID={0}.minimalseq{1}.exon{2};gene_name={3};element_type={4};Parent={5}'.format(ensid, windowcounter, minimalelementexoncounter, gene, 'multiexon', ensid + '.minimalseq' + windowcounter)]
+                    minimalseqs.append(minimalseq)
+
+    return minimalseqs, windowoligosgff
 
                 
 
+#Relate oligo coords to genomecoords
+oligocoorddf = simpleroligos2genome(sys.argv[1])
+print(oligocoorddf.head())
 
-oligocoorddf = oligos2genome(sys.argv[1])
+
+#Define enriched windows of oligos
 enrichedwindows, df = definewindows(sys.argv[2], 10)
+print(df.head())
+
 #Join oligocoord and window dfs
-df = pd.merge(oligocoorddf, df, how = 'inner', on = ['genename', 'utrcoord'])
+df = pd.merge(oligocoorddf, df, how = 'inner', on = ['genename', 'oligopos'])
+print(enrichedwindows)
 df.to_csv(path_or_buf = os.path.abspath(sys.argv[2]) + '.sigoligowindows', sep = '\t', na_rep = 'NA', index = False, header = True)
 
+#Define seqs of interest based on enriched windows
+minimalseqs, windowoligosgff = getminimalseqs(enrichedwindows, sys.argv[1])
+with open('minimalseqs.gff', 'w') as outfh:
+    for minimalseq in minimalseqs:
+        print(int(minimalseq[4]) - int(minimalseq[3]))
+        outfh.write(('\t').join(minimalseq) + '\n')
+
+with open('windowoligos.gff', 'w') as outfh:
+    for windowoligo in windowoligosgff:
+        outfh.write(('\t').join(windowoligo) + '\n')
+
 #TODO
-#Merge genomecoords into enrichedwindows df
-#Turn sig oligo windows into sig nt windows
