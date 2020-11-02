@@ -392,8 +392,117 @@ def getminimalseqs(enrichedwindows, oligogff, cushion):
 
     return minimalseqs, windowoligosgff
 
-                
+def makenonwindowgff(oligogff, windowgff):
+    #Given a gff of oligo positions, first get rid of any sequence that contains CDS. This happens because we included sequence upstream
+    #of the start codon to get good coverage of the beginning of the UTR. As of now, this removal is done by hand.
+    #Then, make a gff that contains UTR regions that are covered by oligos but NOT by a significant window. This is in preparation for looking a sequence content, etc.
+    #of UTR regions in significant windows vs. not in significant windows.
+    #Sig windows are minimal seqs as defined by getminimalseqs
 
+    #TODO: get these coordinates from mm10 gff
+    firstfullyUTRoligo = {} #{genename : coordinate of first UTR nt in UTRs covered by oligos}
+    firstfullyUTRoligo['Trak2'] = 58903503
+    firstfullyUTRoligo['Fnbp4'] = 90779652
+    firstfullyUTRoligo['Trp53inp2'] = 155386793
+    firstfullyUTRoligo['Akap12'] = 4357932
+    firstfullyUTRoligo['Gdf11'] = 128885105
+    firstfullyUTRoligo['Net1'] = 3884069
+    firstfullyUTRoligo['Cplx2'] = 54379710
+    firstfullyUTRoligo['Paxbp1'] = 91015060
+    firstfullyUTRoligo['Kif5b'] = 6208204
+    firstfullyUTRoligo['Afap1l1'] = 61731286
+    firstfullyUTRoligo['Malat1'] = 5802671
+    firstfullyUTRoligo['Cdc42bpg'] = 6324574
+    firstfullyUTRoligo['Ogt'] = 101682331
+    firstfullyUTRoligo['Rab13'] = 90225584 
+
+    print('Indexing gff...')
+    gff_fn = oligogff
+    db_fn = os.path.abspath(gff_fn) + '.db'
+    if os.path.isfile(db_fn) == False:
+        gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
+
+    oligodb = gffutils.FeatureDB(db_fn)
+    print('Done indexing!')
+
+    print('Indexing gff...')
+    gff_fn = windowgff
+    db_fn = os.path.abspath(gff_fn) + '.db'
+    if os.path.isfile(db_fn) == False:
+        gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
+
+    windowdb = gffutils.FeatureDB(db_fn)
+    print('Done indexing!')
+
+    #Get nucelotides that are in a minimal seq window
+    minimalseqnt = {} #{gene : [nt in minimalseq]}
+    minimalseqs = windowdb.features_of_type('minimalseq')
+    for minimalseq in minimalseqs:
+        gene = minimalseq.attributes['gene_name'][0]
+        if gene not in minimalseqnt:
+            minimalseqnt[gene] = []
+        nt = list(range(minimalseq.start + 25, minimalseq.end - 25 + 1)) #remove 25 nt cushion on minimalseqs.gff
+        minimalseqnt[gene] += nt
+
+    oligononwindownt = {}  #{gene : [nt that are not in sig window]}
+    genename2ensid = {} #{gene_name : ensid}
+
+    oligos = oligodb.features_of_type('oligo')
+    for oligo in oligos:
+        gene = oligo.attributes['gene_name'][0]
+        if gene not in oligononwindownt:
+            oligononwindownt[gene] = []
+        strand = oligo.strand
+        utrboundary = firstfullyUTRoligo[gene]
+        nt = list(range(oligo.start, oligo.end + 1))
+        #Get rid of any nt outside of nt boundary
+        if strand == '+':
+            nt = [x for x in nt if x >= utrboundary]
+        elif strand == '-':
+            nt = [x for x in nt if x <= utrboundary]
+        #Get rid of any nt in a sig window
+        try:
+            windownt = minimalseqnt[gene]
+        except KeyError: #this gene wasn't in minimalseqgff (probably because it didn't have a minimal seq)
+            windownt = []
+        nt = [x for x in nt if x not in windownt]
+        oligononwindownt[gene] += nt
+
+        ensid = str(oligo.id).split('.')[0]
+        genename2ensid[gene] = ensid
+
+    #Go through oligononwindownt and break it up into contiguous chunks
+    oligononwindownt_chunks = {} #{gene : [[chunk1start, chunk1stop], [chunk2start, chunk2stop], ...]}
+    #Break consective windows into chunks as above
+    for gene in oligononwindownt:
+        nt = sorted(list(set(oligononwindownt[gene])))
+        windows = [] #tuples of (windowstart, windowstop)
+        for k, g in groupby(enumerate(nt), lambda x:x[0] - x[1]):
+            group = list(map(itemgetter(1), g))
+            windows.append((group[0], group[-1]))
+        oligononwindownt_chunks[gene] = windows
+
+    #Write nonwindownt to gff
+    with open('nonminimalseqs.gff', 'w') as outfh:
+        for gene in oligononwindownt_chunks:
+            ensid = genename2ensid[gene]
+            utrensid = genename2ensid[gene] + '.UTR'
+            chrm = oligodb[utrensid].chrom
+            strand = oligodb[utrensid].strand
+            spanstart = str(oligononwindownt_chunks[gene][0][0])
+            spanend = str(oligononwindownt_chunks[gene][-1][1])
+            outfh.write(('\t').join([chrm, 'mm10', 'nonminimalseqspan', spanstart, spanend, '.', strand, '.', 'ID={0}.nonminimalseqspan;gene_name={1}'.format(ensid, gene)])+ '\n')
+            chunkcounter = 0
+            for chunk in oligononwindownt_chunks[gene]:
+                chunkcounter +=1
+                chunkstart = str(chunk[0])
+                chunkend = str(chunk[1])
+
+                outfh.write(('\t').join([chrm, 'mm10', 'nonminimalseqchunk', chunkstart, chunkend, '.', strand, '.', 'ID={0}.nonminimalseqchunk{1};gene_name={2};Parent={3}.nonminimalseqspan'.format(ensid, chunkcounter, gene, ensid)]) + '\n')  
+
+
+                
+'''
 #Relate oligo coords to genomecoords
 oligocoorddf = simpleroligos2genome(sys.argv[1])
 print(oligocoorddf.head())
@@ -418,6 +527,11 @@ with open('minimalseqs.gff', 'w') as outfh:
 with open('windowoligos.gff', 'w') as outfh:
     for windowoligo in windowoligosgff:
         outfh.write(('\t').join(windowoligo) + '\n')
+'''
+
+#Make a gff for UTR regions NOT in a minimal seq
+#oligogff, minimalseqgff
+makenonwindowgff(sys.argv[1], sys.argv[2])
 
 #TODO
 #remove CDS seqs from UTR seqs
