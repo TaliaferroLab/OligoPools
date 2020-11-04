@@ -18,6 +18,8 @@ import sys
 import gffutils
 from itertools import groupby
 from operator import itemgetter
+import gzip
+from Bio import SeqIO
 
 def simpleroligos2genome(gff):
     #Just make a table that relates oligo position in the UTR (i.e. 1, 2, 3, 4, etc.)
@@ -418,20 +420,20 @@ def makenonwindowgff(oligogff, windowgff):
 
     print('Indexing gff...')
     gff_fn = oligogff
-    db_fn = os.path.abspath(gff_fn) + '.db'
-    if os.path.isfile(db_fn) == False:
-        gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
+    oligodb_fn = os.path.abspath(gff_fn) + '.db'
+    if os.path.isfile(oligodb_fn) == False:
+        gffutils.create_db(gff_fn, oligodb_fn, merge_strategy = 'merge', verbose = True)
 
-    oligodb = gffutils.FeatureDB(db_fn)
+    oligodb = gffutils.FeatureDB(oligodb_fn)
     print('Done indexing!')
 
     print('Indexing gff...')
     gff_fn = windowgff
-    db_fn = os.path.abspath(gff_fn) + '.db'
-    if os.path.isfile(db_fn) == False:
-        gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
+    windowdb_fn = os.path.abspath(gff_fn) + '.db'
+    if os.path.isfile(windowdb_fn) == False:
+        gffutils.create_db(gff_fn, windowdb_fn, merge_strategy = 'merge', verbose = True)
 
-    windowdb = gffutils.FeatureDB(db_fn)
+    windowdb = gffutils.FeatureDB(windowdb_fn)
     print('Done indexing!')
 
     #Get nucelotides that are in a minimal seq window
@@ -441,7 +443,7 @@ def makenonwindowgff(oligogff, windowgff):
         gene = minimalseq.attributes['gene_name'][0]
         if gene not in minimalseqnt:
             minimalseqnt[gene] = []
-        nt = list(range(minimalseq.start + 25, minimalseq.end - 25 + 1)) #remove 25 nt cushion on minimalseqs.gff
+        nt = list(range(minimalseq.start, minimalseq.end + 1))
         minimalseqnt[gene] += nt
 
     oligononwindownt = {}  #{gene : [nt that are not in sig window]}
@@ -500,10 +502,60 @@ def makenonwindowgff(oligogff, windowgff):
 
                 outfh.write(('\t').join([chrm, 'mm10', 'nonminimalseqchunk', chunkstart, chunkend, '.', strand, '.', 'ID={0}.nonminimalseqchunk{1};gene_name={2};Parent={3}.nonminimalseqspan'.format(ensid, chunkcounter, gene, ensid)]) + '\n')  
 
+    os.remove(oligodb_fn)
+    os.remove(windowdb_fn)      
 
-                
+def gff2seq(gff, feature, genomefasta, outfilename):
+    #Given a gff and the featurename to look for, output a fasta
+    
+    print('Indexing gff...')
+    gff_fn = gff
+    db_fn = os.path.abspath(gff_fn) + '.db'
+    if os.path.isfile(db_fn) == False:
+        gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
+
+    db = gffutils.FeatureDB(db_fn)
+    print('Done indexing!')
+
+    with open(outfilename, 'w') as outfh:
+        with gzip.open(genomefasta, 'rt') as genomefh:
+            print('Indexing genome...')
+            seq_dict = SeqIO.to_dict(SeqIO.parse(genomefh, 'fasta'))
+            print('Done!')
+            for f in db.features_of_type(feature):
+                chrm = str(f.chrom)
+                start = f.start
+                end = f.end
+                strand = f.strand
+                seqid = str(f.id) + '_' + str(f.attributes['gene_name'][0])
+                outfh.write('>' + seqid + '\n')
+                if strand == '+':
+                    seq = seq_dict[chrm].seq[start - 1 : end].upper()
+                elif strand == '-':
+                    seq = seq_dict[chrm].seq[start - 1 : end].reverse_complement().upper()
+                outfh.write(str(seq) + '\n')
+    
+    os.remove(db_fn)
+
+def getntcontent(fasta, outfile):
+    #Get nt content of sequences in fasta
+    with open(fasta, 'r') as infh, open(outfile, 'w') as outfh:
+        outfh.write(('\t').join(['seq', 'A', 'U', 'G', 'C']) + '\n')
+        for record in SeqIO.parse(fasta, 'fasta'):
+            seqid = str(record.id)
+            seq = str(record.seq)
+            a = round(seq.count('A') / len(seq), 4)
+            c = round(seq.count('C') / len(seq), 4)
+            u = round(seq.count('T') / len(seq), 4)
+            g = round(seq.count('G') / len(seq), 4)
+            outfh.write(('\t').join([seqid, str(a), str(u), str(g), str(c)]) + '\n')
+
+
+
+
 '''
 #Relate oligo coords to genomecoords
+#needs probegff
 oligocoorddf = simpleroligos2genome(sys.argv[1])
 print(oligocoorddf.head())
 
@@ -518,7 +570,7 @@ print(enrichedwindows)
 df.to_csv(path_or_buf = os.path.abspath(sys.argv[2]) + '.sigoligowindows', sep = '\t', na_rep = 'NA', index = False, header = True)
 
 #Define seqs of interest based on enriched windows
-minimalseqs, windowoligosgff = getminimalseqs(enrichedwindows, sys.argv[1], 25)
+minimalseqs, windowoligosgff = getminimalseqs(enrichedwindows, sys.argv[1], 10)
 with open('minimalseqs.gff', 'w') as outfh:
     for minimalseq in minimalseqs:
         print(int(minimalseq[4]) - int(minimalseq[3]))
@@ -527,15 +579,21 @@ with open('minimalseqs.gff', 'w') as outfh:
 with open('windowoligos.gff', 'w') as outfh:
     for windowoligo in windowoligosgff:
         outfh.write(('\t').join(windowoligo) + '\n')
-'''
+
 
 #Make a gff for UTR regions NOT in a minimal seq
 #oligogff, minimalseqgff
-makenonwindowgff(sys.argv[1], sys.argv[2])
+makenonwindowgff(sys.argv[1], 'minimalseqs.gff')
+
+#Write fastas for minimalseq and nonminimalseq gffs
+gff2seq('minimalseqs.gff', 'minimalseq', sys.argv[3], 'minimalseqs.fa')
+gff2seq('nonminimalseqs.gff', 'nonminimalseqchunk', sys.argv[3], 'nonminimalseqs.fa')
+
+'''
+getntcontent('minimalseqs.fa', 'minimalseqntcontent.txt')
+getntcontent('nonminimalseqs.fa', 'nonminimalseqntcontent.txt')
 
 #TODO
-#remove CDS seqs from UTR seqs
-#generate minimal seq gff and non-minimal seq gff (but is still UTR)
 #generate random regions from non-minimal seq gff
 #NT content
 #dinucleotide content
