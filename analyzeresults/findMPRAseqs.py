@@ -17,6 +17,7 @@ import pandas as pd
 import sys
 import gffutils
 from itertools import groupby
+from itertools import product
 from operator import itemgetter
 import gzip
 from Bio import SeqIO
@@ -540,7 +541,7 @@ def gff2seq(gff, feature, genomefasta, outfilename):
 def getntcontent(fasta, outfile):
     #Get nt content of sequences in fasta
     with open(fasta, 'r') as infh, open(outfile, 'w') as outfh:
-        outfh.write(('\t').join(['seq', 'A', 'U', 'G', 'C']) + '\n')
+        outfh.write(('\t').join(['seq', 'length', 'A', 'U', 'G', 'C']) + '\n')
         for record in SeqIO.parse(fasta, 'fasta'):
             seqid = str(record.id)
             seq = str(record.seq)
@@ -548,10 +549,70 @@ def getntcontent(fasta, outfile):
             c = round(seq.count('C') / len(seq), 4)
             u = round(seq.count('T') / len(seq), 4)
             g = round(seq.count('G') / len(seq), 4)
-            outfh.write(('\t').join([seqid, str(a), str(u), str(g), str(c)]) + '\n')
+            length = str(len(seq))
+            outfh.write(('\t').join([seqid, length, str(a), str(u), str(g), str(c)]) + '\n')
+
+def getdintcontent(fasta, outfile):
+    #Get dint content of sequences in fasta
+    #Get all dinucleotides
+    bases = 'ATCG'
+    dints = []
+    for dint in product(bases, repeat = 3):
+        dints.append(''.join(dint))
+    dintwithu = [x.replace('T', 'U') for x in dints]
+    with open(fasta, 'r') as infh, open(outfile, 'w') as outfh:
+        outfh.write(('\t').join(['seq', 'length'] + dintwithu) + '\n')
+        for record in SeqIO.parse(fasta, 'fasta'):
+            dintfreqs = []
+            seqid = str(record.id)
+            genename = seqid.split('|')[1]
+            if genename == 'Cplx2':
+                continue
+            seq = str(record.seq)
+            length = str(len(seq))
+            for dint in dints:
+                count = seq.count(dint)
+                possibledint = len(seq) - 2
+                freq = round(count / possibledint, 4)
+                dintfreqs.append(freq)
+            dintfreqs = [str(x) for x in dintfreqs]
+            outfh.write(('\t').join([seqid, length] + dintfreqs) + '\n')
 
 
+def makeoligoclassfastas(deseqtable, oligofasta):
+    #Given a DESeq output table and a fasta file of all oligo sequences,
+    #output 3 fastas, one of neurite oligos, one of soma oligos, and one of soma oligos
 
+    oligocategories = {} #{oligoID : neurite/soma/nonenriched}
+    with open(deseqtable, 'r') as infh:
+        for line in infh:
+            line = line.strip().split('\t')
+            if line[0] == 'ensid':
+                #skip header
+                continue
+            #Fix oligo ID so it matches with fasta
+            oligoID = line[0] + '|' + line[1]
+            sig = line[8]
+            if sig == 'neurite':
+                oligocategories[oligoID] = 'neurite'
+            elif sig == 'soma':
+                oligocategories[oligoID] = 'soma'
+            elif sig == 'no':
+                oligocategories[oligoID] = 'nonenriched'
+
+    with open(oligofasta, 'r') as fastafh, open('neuriteoligos.fa', 'w') as neuritefh, open('somaoligos.fa', 'w') as somafh, open('nonenrichedoligos.fa', 'w') as nonenrichedfh:
+        for record in SeqIO.parse(oligofasta, 'fasta'):
+            try:
+                oligocategory = oligocategories[str(record.id)]
+            except KeyError:
+                #not all oligos are in the deseq output table
+                continue
+            if oligocategory == 'neurite':
+                neuritefh.write('>' + str(record.id) + '\n' + str(record.seq) + '\n')
+            elif oligocategory == 'soma':
+                somafh.write('>' + str(record.id) + '\n' + str(record.seq) + '\n')
+            elif oligocategory == 'nonenriched':
+                nonenrichedfh.write('>' + str(record.id) + '\n' + str(record.seq) + '\n')
 
 '''
 #Relate oligo coords to genomecoords
@@ -589,10 +650,22 @@ makenonwindowgff(sys.argv[1], 'minimalseqs.gff')
 gff2seq('minimalseqs.gff', 'minimalseq', sys.argv[3], 'minimalseqs.fa')
 gff2seq('nonminimalseqs.gff', 'nonminimalseqchunk', sys.argv[3], 'nonminimalseqs.fa')
 
-'''
+
 getntcontent('minimalseqs.fa', 'minimalseqntcontent.txt')
 getntcontent('nonminimalseqs.fa', 'nonminimalseqntcontent.txt')
+getntcontent('neuriteoligos.fa', 'neuriteoligontcontent.txt')
+getntcontent('somaoligos.fa', 'somaoligontcontent.txt')
+getntcontent('nonenrichedoligos.fa', 'nonenrichedoligontcontent.txt')
+'''
 
+getdintcontent('neuriteoligos.fa', 'neuriteoligotrintcontent.nocplx2.txt')
+getdintcontent('somaoligos.fa', 'somaoligotrintcontent.nocplx2.txt')
+getdintcontent('nonenrichedoligos.fa', 'nonenrichedoligotrintcontent.nocplx2.txt')
+
+'''
+#Write fastas of oligo sequences
+makeoligoclassfastas(sys.argv[1], sys.argv[2])
+'''
 #TODO
 #generate random regions from non-minimal seq gff
 #NT content
