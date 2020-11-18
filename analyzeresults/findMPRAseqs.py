@@ -21,12 +21,15 @@ from itertools import product
 from operator import itemgetter
 import gzip
 from Bio import SeqIO
+import pysam
 
 def simpleroligos2genome(gff):
     #Just make a table that relates oligo position in the UTR (i.e. 1, 2, 3, 4, etc.)
     #to the start genomecoord of the oligo
 
     oligocoords = {} #{utr : {oligoposition : genomecoordofstart}}
+    oligostrands = {} #{utr : strand}
+    oligochrms = {} #{utr: chrom}
 
     print('Indexing gff...')
     gff_fn = gff
@@ -43,6 +46,10 @@ def simpleroligos2genome(gff):
         utrid = str(utr.attributes['gene_name'][0])
         if utrid not in oligocoords:
             oligocoords[utrid] = {}
+        if utrid not in oligostrands:
+            oligostrands[utrid] = utr.strand
+        if utrid not in oligochrms:
+            oligochrms[utrid] = utr.chrom
         for oligo in db.children(utr, featuretype = 'oligo'):
             oligoid = int(str(oligo.id).split('.')[1])
             if oligo.strand == '+':
@@ -59,6 +66,9 @@ def simpleroligos2genome(gff):
     df.reset_index(level = 1, inplace = True)
     df.reset_index(level = 0, inplace = True)
     df.columns = ['genename', 'oligopos', 'genomecoord']
+    df['strand'] = [oligostrands[x] for x in df['genename']]
+    df['chrm'] = [oligochrms[x] for x in df['genename']]
+    print(df.head())
 
     return df
 
@@ -614,12 +624,106 @@ def makeoligoclassfastas(deseqtable, oligofasta):
             elif oligocategory == 'nonenriched':
                 nonenrichedfh.write('>' + str(record.id) + '\n' + str(record.seq) + '\n')
 
-'''
+def oligophastconsmean(gff, phastconsbed, outfile):
+    #Get the mean phastcons score for all nt in an oligo
+    gff_fn = gff
+    db_fn = os.path.basename(gff_fn) + '.db'
+
+    if os.path.isfile(db_fn) == False:
+        gffutils.create_db(gff_fn, db_fn)
+
+    db = gffutils.FeatureDB(db_fn)
+
+    phastconsmeans = {} # {oligoID : mean phastcons score}
+    interrogated_oligos = 0
+    interrogated_bps = 0
+    oligos_with_scores = 0
+    bps_with_scores = 0
+    phastconstabix = pysam.Tabixfile(phastconsbed)
+    oligos = db.features_of_type('oligo')
+
+    for oligo in oligos:
+        oligolength = 0
+        phastconsscores = []
+        interrogated_oligos +=1
+        if interrogated_oligos % 100 == 0:
+            sys.stderr.write('Interrogating oligo {0}\n'.format(interrogated_oligos))
+
+        if oligo.attributes['oligo_type'][0] == 'regular_oneexon':
+            oligolength += int(oligo.stop - oligo.start)
+            for bed in phastconstabix.fetch(str(oligo.chrom), oligo.start, oligo.end, parser = pysam.asTuple()):
+                score = bed[4]
+                phastconsscores.append(float(score))
+        elif oligo.attributes['oligo_type'][0] == 'junction':
+            for junctionpiece in db.children(oligo, featuretype = 'junctionpiece', level = 1):
+                oligolength += int(junctionpiece.stop - junctionpiece.start)
+                for bed in phastconstabix.fetch(str(junctionpiece.chrom), junctionpiece.start, junctionpiece.end, parser = pysam.asTuple()):
+                    score = bed[4]
+                    phastconsscores.append(float(score))
+
+        if len(phastconsscores) > 0:
+            oligos_with_scores +=1
+            phastconsmeans[str(oligo.id)] = (sum(phastconsscores) / float(len(phastconsscores)))
+        
+        scored_bps = len(phastconsscores)
+        interrogated_bps += oligolength
+        bps_with_scores += scored_bps
+
+    percent_bp_with_scores = (bps_with_scores / float(interrogated_bps))*100
+
+    sys.stderr.write('Searched {0} oligos and got PhastCons scores for {1} of them. Overall, scores were obtained for {2}% of all interrogated bps.\n'.format(interrogated_oligos, oligos_with_scores, percent_bp_with_scores))
+
+    os.remove(db_fn)
+
+    with open(outfile, 'w') as outfh:
+        for oligo in phastconsmeans:
+            outfh.write(('\t').join([str(oligo), str(phastconsmeans[oligo])]) + '\n')    
+
+def getAGwindows(oligogff, genomefasta, outfile):
+    #Get smoothed windows of A/G content across UTRs
+
+    gff_fn = oligogff
+    db_fn = os.path.basename(gff_fn) + '.db'
+
+    if os.path.isfile(db_fn) == False:
+        gffutils.create_db(gff_fn, db_fn)
+
+    db = gffutils.FeatureDB(db_fn)
+    utrs = db.features_of_type('UTR')
+
+    with gzip.open(genomefasta, 'rt') as genomefh:
+        print('Indexing genome...')
+        seq_dict = SeqIO.to_dict(SeqIO.parse(genomefh, 'fasta'))
+        print('Done!')
+
+    with open(outfile, 'w') as outfh:
+        outfh.write(('\t').join(['genename', 'position', 'agfrac']) + '\n')
+        for utr in utrs:
+            chrm = str(utr.chrom)
+            strand = utr.strand
+            genename = utr.attributes['gene_name'][0]
+            for nt in range(utr.start, utr.end):
+                #20 nt window
+                windowstart = nt - 10
+                windowend = nt + 10
+                if strand == '+':
+                    seq = str(seq_dict[chrm].seq[windowstart:windowend + 1]).upper()
+                elif strand == '-':
+                    seq = str(seq_dict[chrm].seq[windowstart:windowend + 1].reverse_complement()).upper()
+                agfrac = round((seq.count('A') + seq.count('G')) / len(seq), 4)
+                outfh.write(('\t').join([genename, str(nt), str(agfrac)]) + '\n')
+
+
+
+
+
+
+
+
 #Relate oligo coords to genomecoords
 #needs probegff
 oligocoorddf = simpleroligos2genome(sys.argv[1])
 print(oligocoorddf.head())
-
 
 #Define enriched windows of oligos
 enrichedwindows, df = definewindows(sys.argv[2], 10)
@@ -631,10 +735,10 @@ print(enrichedwindows)
 df.to_csv(path_or_buf = os.path.abspath(sys.argv[2]) + '.sigoligowindows', sep = '\t', na_rep = 'NA', index = False, header = True)
 
 #Define seqs of interest based on enriched windows
-minimalseqs, windowoligosgff = getminimalseqs(enrichedwindows, sys.argv[1], 10)
+minimalseqs, windowoligosgff = getminimalseqs(enrichedwindows, sys.argv[1], 0)
 with open('minimalseqs.gff', 'w') as outfh:
     for minimalseq in minimalseqs:
-        print(int(minimalseq[4]) - int(minimalseq[3]))
+        print(minimalseq[8], int(minimalseq[4]) - int(minimalseq[3]))
         outfh.write(('\t').join(minimalseq) + '\n')
 
 with open('windowoligos.gff', 'w') as outfh:
@@ -650,27 +754,32 @@ makenonwindowgff(sys.argv[1], 'minimalseqs.gff')
 gff2seq('minimalseqs.gff', 'minimalseq', sys.argv[3], 'minimalseqs.fa')
 gff2seq('nonminimalseqs.gff', 'nonminimalseqchunk', sys.argv[3], 'nonminimalseqs.fa')
 
-
+'''
 getntcontent('minimalseqs.fa', 'minimalseqntcontent.txt')
 getntcontent('nonminimalseqs.fa', 'nonminimalseqntcontent.txt')
 getntcontent('neuriteoligos.fa', 'neuriteoligontcontent.txt')
 getntcontent('somaoligos.fa', 'somaoligontcontent.txt')
 getntcontent('nonenrichedoligos.fa', 'nonenrichedoligontcontent.txt')
-'''
 
 getdintcontent('neuriteoligos.fa', 'neuriteoligotrintcontent.nocplx2.txt')
 getdintcontent('somaoligos.fa', 'somaoligotrintcontent.nocplx2.txt')
 getdintcontent('nonenrichedoligos.fa', 'nonenrichedoligotrintcontent.nocplx2.txt')
 
-'''
 #Write fastas of oligo sequences
 makeoligoclassfastas(sys.argv[1], sys.argv[2])
+
+#Get oligo conservation
+#oligogff, phastconsbed, outfile
+oligophastconsmean(sys.argv[1], sys.argv[2], sys.argv[3])
+
+
+#Get AG content across UTRs
+#oligogff, genomefasta, outfile
+getAGwindows(sys.argv[1], sys.argv[2], sys.argv[3])
 '''
+
+
+
 #TODO
 #generate random regions from non-minimal seq gff
-#NT content
-#dinucleotide content
-#MEME?
-#conservation
-#Rnafold
-#G4
+#sliding G/A content window across UTR -- for each nt in the UTR (as defined by oligos.gff), calculate sliding average GAcontent
