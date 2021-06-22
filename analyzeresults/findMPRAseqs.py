@@ -369,7 +369,7 @@ def getminimalseqs(enrichedwindows, oligogff, cushion):
             if gene == 'Cplx2':
                 windowmode = 'union'
             else:
-                windowmode = 'intersect'
+                windowmode = 'union'
             if windowmode == 'intersect':
                 commonnt = set(coverednt[0])
                 for x in coverednt[1:]:
@@ -679,8 +679,9 @@ def oligophastconsmean(gff, phastconsbed, outfile):
         for oligo in phastconsmeans:
             outfh.write(('\t').join([str(oligo), str(phastconsmeans[oligo])]) + '\n')    
 
-def getAGwindows(oligogff, genomefasta, outfile):
+def getAGwindows_oligos(oligogff, genomefasta, outfile):
     #Get smoothed windows of A/G content across UTRs
+    #This one is meant to take in an oligogff
 
     gff_fn = oligogff
     db_fn = os.path.basename(gff_fn) + '.db'
@@ -713,13 +714,78 @@ def getAGwindows(oligogff, genomefasta, outfile):
                 agfrac = round((seq.count('A') + seq.count('G')) / len(seq), 4)
                 outfh.write(('\t').join([genename, str(nt), str(agfrac)]) + '\n')
 
+def getAGwindows_allUTRs(UTRgff, genomefasta, outfile):
+    #Get smoothed windows of A/G content across UTRs
+    #This one is meant to take in a longest UTRs gff
+
+    gff_fn = UTRgff
+    db_fn = os.path.basename(gff_fn) + '.db'
+
+    if os.path.isfile(db_fn) == False:
+        gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge')
+
+    db = gffutils.FeatureDB(db_fn)
+    utrs = db.features_of_type('UTR3')
+
+    with gzip.open(genomefasta, 'rt') as genomefh:
+        print('Indexing genome...')
+        seq_dict = SeqIO.to_dict(SeqIO.parse(genomefh, 'fasta'))
+        print('Done!')
+    
+    with open(outfile, 'w') as outfh:
+        outfh.write(('\t').join(['genename', 'chrm', 'startcoord', 'endcoord', 'metaposition', 'agfrac']) + '\n')
+        for utr in utrs:
+            chrm = str(utr.chrom)
+            strand = utr.strand
+            genename = utr.attributes['Parent'][0][5:].split('.')[0]
+            if strand == '+':
+                exoniccoords = []
+                seq = ''
+                #Get exonic coords and seqs
+                for exon in db.children(utr, featuretype = 'exon', order_by = 'start'):
+                    exoniccoords += list(range(exon.start, exon.end + 1))
+                    exonseq = seq_dict[chrm].seq[exon.start : exon.end + 1].upper()
+                    seq += exonseq
+
+            elif strand == '-':
+                exoniccoords = []
+                seq = ''
+                #Get exonic coords and seqs
+                for exon in db.children(utr, featuretype = 'exon', order_by = 'start', reverse = True):
+                    exoniccoords += list(reversed(list(range(exon.start, exon.end + 1))))
+                    exonseq = seq_dict[chrm].seq[exon.start : exon.end + 1].reverse_complement().upper()
+                    seq += exonseq
+
+            if len(seq) < 100:
+                continue
+
+            for x in list(range(len(seq))):
+                if x % 5 != 0:
+                    continue
+                #window size = 100
+                #step size = 5
+                if x < 50:
+                    windowboundaries = [0, x + 50]
+                elif len(seq) - x < 50:
+                    windowboundaries = [x, len(seq)]
+                else:
+                    windowboundaries = [x - 50 , x + 50]
+
+                startcoord = exoniccoords[windowboundaries[0]]
+                endcoord = exoniccoords[windowboundaries[1] - 1]
+                metaposition = round(x / float(len(seq)), 3)
+                windowseq = seq[windowboundaries[0] : windowboundaries[1]]
+                agfrac = (windowseq.count('A') + windowseq.count('G')) / len(windowseq)
+                outfh.write(('\t').join([genename, chrm, str(startcoord), str(endcoord), str(metaposition), str(agfrac)]) + '\n')
+
+
+                    
 
 
 
 
 
-
-
+'''
 #Relate oligo coords to genomecoords
 #needs probegff
 oligocoorddf = simpleroligos2genome(sys.argv[1])
@@ -727,7 +793,8 @@ print(oligocoorddf.head())
 
 #Define enriched windows of oligos
 enrichedwindows, df = definewindows(sys.argv[2], 10)
-print(df.head())
+#print(df.head())
+print(enrichedwindows)
 
 #Join oligocoord and window dfs
 df = pd.merge(oligocoorddf, df, how = 'inner', on = ['genename', 'oligopos'])
@@ -753,18 +820,20 @@ makenonwindowgff(sys.argv[1], 'minimalseqs.gff')
 #Write fastas for minimalseq and nonminimalseq gffs
 gff2seq('minimalseqs.gff', 'minimalseq', sys.argv[3], 'minimalseqs.fa')
 gff2seq('nonminimalseqs.gff', 'nonminimalseqchunk', sys.argv[3], 'nonminimalseqs.fa')
-
 '''
-getntcontent('minimalseqs.fa', 'minimalseqntcontent.txt')
-getntcontent('nonminimalseqs.fa', 'nonminimalseqntcontent.txt')
-getntcontent('neuriteoligos.fa', 'neuriteoligontcontent.txt')
-getntcontent('somaoligos.fa', 'somaoligontcontent.txt')
-getntcontent('nonenrichedoligos.fa', 'nonenrichedoligontcontent.txt')
 
-getdintcontent('neuriteoligos.fa', 'neuriteoligotrintcontent.nocplx2.txt')
-getdintcontent('somaoligos.fa', 'somaoligotrintcontent.nocplx2.txt')
-getdintcontent('nonenrichedoligos.fa', 'nonenrichedoligotrintcontent.nocplx2.txt')
+#getntcontent('minimalseqs.fa', 'minimalseqntcontent.txt')
+#getntcontent('nonminimalseqs.fa', 'nonminimalseqntcontent.txt')
+#getntcontent('windowseqs.fa', 'windowseqntcontent.txt')
+#getntcontent('nonwindowseqs.fa', 'nonwindowseqntcontent.txt')
+#getntcontent('neuriteoligos.fa', 'neuriteoligontcontent.txt')
+#getntcontent('somaoligos.fa', 'somaoligontcontent.txt')
+#getntcontent('nonenrichedoligos.fa', 'nonenrichedoligontcontent.txt')
 
+#getdintcontent('neuriteoligos.fa', 'neuriteoligotrintcontent.nocplx2.txt')
+#getdintcontent('somaoligos.fa', 'somaoligotrintcontent.nocplx2.txt')
+#getdintcontent('nonenrichedoligos.fa', 'nonenrichedoligotrintcontent.nocplx2.txt')
+'''
 #Write fastas of oligo sequences
 makeoligoclassfastas(sys.argv[1], sys.argv[2])
 
@@ -772,11 +841,13 @@ makeoligoclassfastas(sys.argv[1], sys.argv[2])
 #oligogff, phastconsbed, outfile
 oligophastconsmean(sys.argv[1], sys.argv[2], sys.argv[3])
 
-
+'''
 #Get AG content across UTRs
 #oligogff, genomefasta, outfile
-getAGwindows(sys.argv[1], sys.argv[2], sys.argv[3])
-'''
+#getAGwindows(sys.argv[1], sys.argv[2], sys.argv[3])
+
+getAGwindows_allUTRs(sys.argv[1], sys.argv[2], sys.argv[3])
+
 
 
 
