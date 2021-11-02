@@ -8,7 +8,7 @@ import gffutils
 import os
 import sys
 from operator import itemgetter
-from itertools import groupby
+from itertools import groupby, combinations
 import subprocess
 import pybedtools
 import pickle
@@ -17,6 +17,7 @@ import gzip
 import argparse
 import pickle
 import collections
+import re
 
 #Write UTR coords to file so that we can use Bedtools.
 #geneUTRcoords is a list of lists.
@@ -109,8 +110,8 @@ def getothergenomepolyA(gff):
 			line = line.strip().split('\t')
 			chrm = line[0]
 			start = int(line[1])
-			windowstart = start - 250 #Can change this
-			windowstop = start + 250#Can change this
+			windowstart = start - 500 #Can change this
+			windowstop = start + 500#Can change this
 			if chrm not in validwindows:
 				validwindows[chrm] = []
 			windowrange = range(windowstart, windowstop + 1)
@@ -171,7 +172,8 @@ def iterategff(gff, validwindows, stepsize):
 	notinvalidwindowscounter = 0
 
 	mergedexons = {} #{genename : [chrm, strand, [[mergedexon1start, mergedexon1stop], [mergedexon2start, mergedexon2stop]], [junctionblocks]]}
-	geneswewant = ['Trp53inp2', 'Trak2', 'Cplx2', 'Net1', 'Cdc42bpg', 'Gdf11', 'Malat1', 'Afap1l1', 'Ogt', 'Paxbp1', 'Fnbp4', 'Rab13', 'Akap12', 'Kif5b']
+	geneswewant = ['Diras1', 'Ksr2', 'Wasf3', 'Fam160b2', 'Kank2', 'Fam219a', 'Lrrc47', 'Spock2',
+                'Kcnj12', 'Cacna1b', 'Lars2', 'Tub', 'Gsk3b', 'Synj2bp', 'Soga3', 'Vash2', 'Trim2', 'Sos2', 'Ptp4a2']
 
 	for gene in genes:
 		genename = str(gene.id).split('.')[0]
@@ -210,7 +212,8 @@ def iterategff(gff, validwindows, stepsize):
 
 			#Only consider transcripts with transcript_support_level of 1 or less
 			#We really want Cplx2 and Cdc42bpg and Malat1 but their sole transcripts are tsl 2 and tsl 5 and tsl NA, respectively
-			if (tsl == 'NA' or int(tsl) > 1) and (geneshortname != 'Cplx2' and geneshortname != 'Cdc42bpg' and geneshortname != 'Malat1'):
+			#Same for Ksr2, Fam160b2, and Bsn
+			if (tsl == 'NA' or int(tsl) > 1) and (geneshortname != 'Ksr2' and geneshortname != 'Klhl8' and geneshortname != 'Fam120c' and geneshortname != 'Fam160b2' and geneshortname != 'Soga3' and geneshortname != 'Ptp4a2' and geneshortname != 'Sos2' and genename != 'Bsn'):
 				tslcounter +=1
 				#print 'TSL fail, {0}.'.format(str(transcript.id))
 				continue
@@ -485,53 +488,6 @@ def cutexons(coords, stepsize):
 				#if currentpos != exonend:
 					#oligos.append([[exonend, exonend + 259]])
 
-	#Wait why?  Isn't this the point of junctionblocks?  You should never have to break one of these oligos.
-	#If there's more than one exon, it's more complicated
-	'''
-	elif len(exons) > 1:
-		if strand == '+':
-			exoniccoords = []
-			for exon in exons:
-				exoniccoords += range(exon[0], exon[1] + 1)
-			currentposindex = 0
-			#This is slightly different than the single-exon example above. Here we are stepping along indices, so we need the oligo to go from index x to index x + 110.
-			#This will give coordinates that are 109 "places" apart
-			while currentposindex + 260 <= len(exoniccoords):
-				oligostart = currentposindex
-				oligoend = currentposindex + 260
-				oligocoords = exoniccoords[oligostart : oligoend]
-				#We might need to break this oligo because it may have crossed an exon/exon boundary
-				oligocoords = breakoligo(oligocoords) #if this doesn't cross a boundary, its now [[start, stop]]. if it does, its [[start1, stop1], [start2, stop2], [start3, stop3]]
-				oligos.append(oligocoords) 
-				currentposindex += stepsize
-			#If the final oligo does not lie flush with the end of the last exon, make one more oligo that does
-			if currentposindex != len(exoniccoords):
-				oligocoords = exoniccoords[-260:]
-				oligocoords = breakoligo(oligocoords)
-				oligos.append(oligocoords)
-
-		elif strand == '-':
-			exoniccoords = []
-			for exon in exons:
-				exoniccoords += range(exon[0], exon[1] + 1)
-			exoniccoords.reverse()
-			currentposindex = 0
-			while currentposindex + 260 <= len(exoniccoords):
-				oligostart = currentposindex + 260 #have to make it so start < end
-				oligoend = currentposindex
-				oligocoords = exoniccoords[oligoend : oligostart]
-				#We might need to break this oligo because it may have crossed an exon/exon boundary
-				oligocoords.reverse() #flip it back around so that startcoord < endcoord
-				oligocoords = breakoligo(oligocoords)
-				oligos.append(oligocoords)
-				currentposindex += stepsize
-			#If the final oligo does not lie flush with the end of the last exon, make one more oligo that does
-			if currentposindex != len(exoniccoords):
-				oligocoords = exoniccoords[-260:]
-				oligocoords = reversed(oligocoords)
-				oligocoords = breakoligo(oligocoords)
-				oligos.append(oligocoords)
-	'''
 	for junction in junctions:
 		joligoindicieslist = []
 		for i in list(range(len(junction)))[::stepsize]:
@@ -713,7 +669,7 @@ def gff2fasta(gff, genomefasta):
 	print('Indexing gff...')
 	gff_fn = gff
 	db_fn = os.path.abspath(gff_fn) + '.db'
-	gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True)
+	gffutils.create_db(gff_fn, db_fn, merge_strategy = 'merge', verbose = True, force = True)
 
 	db = gffutils.FeatureDB(db_fn)
 	print('Done indexing!')
@@ -789,6 +745,201 @@ def gff2fasta(gff, genomefasta):
 
 	os.remove(db_fn)
 
+#OK what if we want to make oligos that have a particular motif mutated
+#After making oligos with the functions above,
+#go through them and find instances of a motif, then mutate them, creating new oligos
+#The ID of these oligos will be the original ID plus |mut1start:mut1stop;mut2start:mut2stop
+#where the coordinates are 1-based positions of mutations within the sequence
+#In the gff, they will also get a tag of mutationloc=mut1start:mut1stop|mut2start:mut2stop
+#where those coordinates are 1-based (because gff) genome coordinates
+
+def getoligocoords(gff):
+	#For each oligo, return a list of coords covered by that oligo
+	coords = {} #{oligoID : [coords]}
+	
+	print('Indexing gff...')
+	gff_fn = gff
+	db_fn = os.path.abspath(gff_fn) + '.db'
+	gffutils.create_db(gff_fn, db_fn, merge_strategy='merge',
+	                   verbose=True, force=True)
+
+	db = gffutils.FeatureDB(db_fn)
+	print('Done indexing!')
+
+	oligos = db.features_of_type('oligo')
+	for oligo in oligos:
+		#if this oligo doesn't cross an intron (oligo_type = regular_oneexon), this is easy
+		#if it does cross an intron (oligo_type = junction), then you have to get the coords of
+		#each child junctionpiece individually
+		oligoid = str(oligo.id)
+		strand = str(oligo.strand)
+		if oligo.attributes['oligo_type'][0] == 'regular_oneexon':
+			if strand == '+':
+				oligocoords = list(range(oligo.start, oligo.end + 1))
+			elif strand == '-':
+				oligocoords = list(reversed(range(oligo.start, oligo.end + 1)))
+
+		elif oligo.attributes['oligo_type'][0] == 'junction':
+			oligocoords = []
+			if strand == '+':
+				for junctionpiece in db.children(oligo, featuretype = 'junctionpiece', order_by = 'start'):
+					junctionpiececoords = list(range(junctionpiece.start, junctionpiece.end + 1))
+					oligocoords += junctionpiececoords
+			elif strand == '-':
+				for junctionpiece in db.children(oligo, featuretype = 'junctionpiece', order_by = 'start', reverse = True):
+					junctionpiececoords = list(reversed(range(junctionpiece.start, junctionpiece.end + 1)))
+					oligocoords += junctionpiececoords
+
+		coords[oligoid] = oligocoords
+
+	return coords
+
+def findmotifs(fasta, lefthandlelength, righthandlelength, motifs):
+	#Search throught a fasta of oligo sequences
+	#Remove left and right PCR handles
+	#Look for any motif in list motifs
+	#If you find a motif, mutate it and make a note of its location
+	mutatedoligos = {} #{oligoid : seq}
+
+	for record in SeqIO.parse(fasta, 'fasta'):
+		coveredbymotif = [] #positions covered by a motif
+		seq = str(record.seq)
+		#Remove PCR handles
+		leftadapter = seq[:lefthandlelength]
+		rightadapter = seq[righthandlelength * -1 :]
+		seq = seq[lefthandlelength : righthandlelength * -1]
+		#Look through seq for all motifs
+		for motif in motifs:
+			#allow overlapping motifs (this avoids having to look for many lengths of repetitive motifs)
+			motifstarts = [m.start() for m in re.finditer('(?=' + motif + ')', seq)]
+			for motifstart in motifstarts:
+				for x in range(len(motif)):
+					coveredbymotif.append(motifstart + x)
+
+		#Sort coveredbymotif
+		if not coveredbymotif:
+			continue
+		else:
+			coveredbymotif = sorted(list(set(coveredbymotif)))
+			#Break up sorted coordinates into "chunks" (i.e. motifs)
+			motiflocs = breakoligo(coveredbymotif) #list of lists where each sublist is 0-based [motifstart : motifend]
+
+		#Could be multiple motiflocs per oligo. Make all possible combinations of mutated oligos
+		#i.e. if there are 3 motiflocs, make oligos with 
+		#only 1 mutated, only 2 mutated, only 3 mutated, 1 and 2 mutated, 2 and 3 mutated, 1 and 3 mutated, all three mutated
+
+		#If there's too many motifs it's impossible to make enough oligos to mutate all combinations of motifs.
+		#Here we've decided to not do any combinations, so this if statement will never be satifsifed.
+		if len(motiflocs) < 1:
+			for i in range(1, len(motiflocs) + 1):
+				for comb in combinations(motiflocs, i):
+					comb = list(comb) #may be multiple motif locations
+					mutatedmotifs = [] #may be multiple mutated motifs
+					for motifloc in comb:
+						m = seq[motifloc[0] : motifloc[1] + 1]
+						#mutate motif
+						m = m.upper()
+						m = m.replace('G', 'c').replace('T', 'a').replace('C', 'g').replace('A', 't')
+						m = m.upper()
+						mutatedmotifs.append(m)
+
+					for ind, mutatedmotif in enumerate(mutatedmotifs):
+						motifstart = comb[ind][0]
+						motifend = comb[ind][1]
+						#update seq with mutated motif
+						seq = seq[:motifstart] + mutatedmotif + seq[motifend + 1 :]
+
+					#THIS IS MISSING STUFF ABOUT MAKING THE OLIGO ID
+					#BUT SINCE WE ARE MUTATING ALL MOTIFS, THIS BLOCK NEVER GETS ENTERED (len(motiflocs) always 1 or greater)
+
+
+		#If there's too many motifs it's impossible to make enough oligos to mutate all combinations of motifs.
+		#Instead, just mutate them all.
+		elif len(motiflocs) >= 1:
+			mutatedoligoid = str(record.id)
+			for ind, motif in enumerate(motiflocs):
+				motifstart = motif[0]
+				motifend = motif[1]
+				if ind == 0: #if this is the first motif
+					mutatedoligoid = str(record.id) + '|' + str(motifstart + 1) + ':' + str(motifend + 1) #turn this into 1-based
+				elif ind > 0:
+					mutatedoligoid = mutatedoligoid + ';' + str(motifstart + 1) + ':' + str(motifend + 1)
+				m = seq[motifstart : motifend + 1]
+				#mutate motif
+				m = m.upper()
+				m = m.replace('G', 'c').replace('T', 'a').replace('C', 'g').replace('A', 't')
+				m = m.upper()
+				#update seq with mutated motif
+				seq = seq[:motifstart] + m + seq[motifend + 1:]
+
+		#Add pcr handles back
+		seq = leftadapter + seq + rightadapter
+		mutatedoligos[mutatedoligoid] = seq
+
+	print('Created {0} mutated oligos.'.format(len(mutatedoligos)))
+	return mutatedoligos
+				
+def addmutantstofasta(fasta, mutatedoligos):
+	#add new mutated oligos to the end of the original fasta
+	with open(fasta, 'a') as outfh:
+		for oligo in mutatedoligos:
+			outfh.write('>' + oligo + '\n' + mutatedoligos[oligo] + '\n')
+
+def addmutantstogff(gff, fasta, oligocoords):
+	#Add mutant oligos to gff
+	#Get oligo-wise mutation locations from the fasta
+	#Convert those to genome coordinates using oligocoords
+	#oligocoords = {oligoID (without mutation info) : [list of gff coordinates covered by that oligo]}
+
+	print('Indexing gff...')
+	gff_fn = gff
+	db_fn = os.path.abspath(gff_fn) + '.db'
+	gffutils.create_db(gff_fn, db_fn, merge_strategy='merge',
+	                   verbose=True, force=True)
+
+	db = gffutils.FeatureDB(db_fn)
+	print('Done indexing!')
+
+	for record in SeqIO.parse(fasta, 'fasta'):
+		oligoid = str(record.id)
+		#all mutant oligos contain ':'
+		if ':' in oligoid:
+			genomemutlocations = [] #mutation locations in 1-based genomecoords
+			oligobaseid = oligoid.split('|')[0] #oligoID without any mutation information
+			wtoligo = db[oligobaseid]
+			oligochildren = []
+			for oligochild in db.children(wtoligo):
+				oligochildren.append(oligochild)
+
+			oligomutlocations = oligoid.split('|')[-1].split(';') #mutation locations in 1-based oligocoords
+			wtoligocoords = oligocoords[oligobaseid]
+			for oligomutlocation in oligomutlocations:
+				oligomutlocation = oligomutlocation.split(':')
+				oligomutlocation = [int(x) for x in oligomutlocation]
+				genomecoords = wtoligocoords[oligomutlocation[0] - 1 : oligomutlocation[1]]
+				genomemutlocations.append(str(min(genomecoords)) + ':' + str(max(genomecoords)))
+
+			with open('oligos.mm10.gff', 'a') as outfh: 
+				atts = ''
+				wtoligo.attributes['oligo_type'][0] = wtoligo.attributes['oligo_type'][0] + '_motifmutant'
+				for att in wtoligo.attributes:
+					attstring = att + '=' + wtoligo.attributes[att][0] + ';'
+					atts += attstring
+				atts += 'mutationloc=' + '|'.join(genomemutlocations)
+				#Make mut oligo ID
+				oligomutpos = oligoid.split('|')[2]
+				mutoligoid = oligobaseid + '|' + oligomutpos
+				#Replace WT oligo ID with mut oligo ID
+				atts = atts.replace(str(wtoligo.id), mutoligoid)
+
+				outlist = [str(wtoligo.chrom), 'mm10', 'mutoligo', str(wtoligo.start), str(wtoligo.end), '.', str(wtoligo.strand), '.', atts]
+				outfh.write('\t'.join(outlist) + '\n')
+
+
+
+
+
+
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--gff', type = str, help = 'GFF file of genome to make oligos from.')
@@ -796,17 +947,17 @@ if __name__ == '__main__':
 	parser.add_argument('--filterdata', type = str, help = 'File containing genes to make oligos from.')
 	parser.add_argument('--genomefasta', type = str, help = 'Sequence in fasta format for the genome to make oligos from.')
 	parser.add_argument('--stepsize', type = int, help = 'Step size from one oligo to the next.')
+	parser.add_argument('--motifs', type = str, help = 'Optional. Comma separated list of motifs. Any oligos containing these motifs will have mutant versions made lacking these motifs.')
 	args = parser.parse_args()
 
+	
 	#Find orthologous polyA sites
-	#validwindows = getothergenomepolyA(args.othergenomegff)
-	#pickle.dump(validwindows, open('validwindows.pkl', 'wb'))
-	validwindows = pickle.load(open('validwindows.pkl', 'rb'))
+	validwindows = getothergenomepolyA(args.othergenomegff)
 	#Find UTRs that pass transcript and polyA site filters
 	mergedexons = iterategff(args.gff, validwindows, args.stepsize)
-	pickle.dump(mergedexons, open('mergedexons.pkl', 'wb'))
-	#mergedexons = pickle.load(open('mergedexons.pkl', 'rb'))
-	mergedexons = filtergenes(args.filterdata, mergedexons)
+
+	if args.filterdata:
+		mergedexons = filtergenes(args.filterdata, mergedexons)
 
 	#Get ensembl gene ID / genename relationships
 	genenames = getgenenames(args.gff)
@@ -844,3 +995,34 @@ if __name__ == '__main__':
 	os.remove('temp.gff')
 	#Make fasta
 	gff2fasta('oligos.mm10.gff', args.genomefasta)
+	
+	#If motifs are given, make mutant oligos
+	if args.motifs:
+		print('Adding mutant oligos...')
+		motifs = args.motifs.split(',')
+		oligocoords = getoligocoords('oligos.mm10.gff')
+		mutatedoligos = findmotifs('oligos.mm10.fa', 20, 20, motifs)
+		addmutantstofasta('oligos.mm10.fa', mutatedoligos)
+		addmutantstogff('oligos.mm10.gff', 'oligos.mm10.fa', oligocoords)
+
+		#Count how many total oligos
+		with open('oligos.mm10.fa', 'r') as infh:
+			oligocount = 0
+			for line in infh:
+				oligocount +=1
+			print('With mutant oligos, we end up with {0} oligos.'.format(int(oligocount / 2)))
+
+	#Print number of oligos per gene
+	oligospergene = {}
+	for record in SeqIO.parse('oligos.mm10.fa', 'fasta'):
+		gene = str(record.id).split('|')[1]
+		if gene not in oligospergene:
+			oligospergene[gene] = 1
+		else:
+			oligospergene[gene] +=1
+
+	print('Number of oligos for each gene:')
+	for gene in oligospergene:
+		print(gene, oligospergene[gene])
+
+
